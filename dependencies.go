@@ -15,7 +15,19 @@ type Dependency struct {
 	Path   string
 	Parent *Dependency
 	Pruned bool
-	Deps   map[string]*Dependency
+	Deps   []*Dependency
+}
+
+type ByPath []*Dependency
+
+func (v ByPath) Len() int {
+	return len(v)
+}
+func (v ByPath) Swap(i, j int) {
+	v[i], v[j] = v[j], v[i]
+}
+func (v ByPath) Less(i, j int) bool {
+	return v[i].Path < v[j].Path
 }
 
 type ToplevelDependency struct {
@@ -26,12 +38,12 @@ type ToplevelDependency struct {
 
 var depRe = regexp.MustCompile(`(.*?)\s+\(compatibility[^)]+\)`)
 
-// depsCheckAndUpdateIfProcessed checks the toplevel dependency to
-// see if this dependency has already been processed
-func depsPrune(dep *Dependency, topdep *ToplevelDependency) bool {
+// depsPrune checks against the toplevel dependency to see if the current
+// dependency meets pruning criteria, and if so, prunes the given dependency.
+func depsPrune(dep *Dependency, topDep *ToplevelDependency) bool {
 	// The toplevel dependency won't be in FlatDeps.
 	// Check for a circular dependency here.
-	if topdep.Path == dep.Path {
+	if topDep.Path == dep.Path {
 		dep.Pruned = true
 		return true
 	}
@@ -41,18 +53,18 @@ func depsPrune(dep *Dependency, topdep *ToplevelDependency) bool {
 		return true
 	}
 
-	topdep.fdLock.Lock()
-	defer topdep.fdLock.Unlock()
+	topDep.fdLock.Lock()
+	defer topDep.fdLock.Unlock()
 
-	if _, processed := topdep.FlatDeps[dep.Path]; !processed {
-		topdep.FlatDeps[dep.Path] = dep
+	if _, processed := topDep.FlatDeps[dep.Path]; !processed {
+		topDep.FlatDeps[dep.Path] = dep
 		return false
 	}
 	dep.Pruned = true
 	return true
 }
 
-func depsRead(dep *Dependency, topdep *ToplevelDependency, recursive bool, limiter chan int, wg *sync.WaitGroup) {
+func depsRead(dep *Dependency, topDep *ToplevelDependency, recursive bool, limiter chan int, wg *sync.WaitGroup) {
 	if wg != nil {
 		defer wg.Done()
 	}
@@ -75,57 +87,35 @@ func depsRead(dep *Dependency, topdep *ToplevelDependency, recursive bool, limit
 		return
 	}
 
-	var subDeps []*Dependency
 	for _, val := range strings.Split(string(out), "\n") {
 		match := depRe.FindStringSubmatch(val)
 		if match != nil {
 			depPath := strings.TrimSpace(match[1])
 			if depPath != dep.Path {
-				subDep := Dependency{
+				subDep := &Dependency{
 					Name:   filepath.Base(depPath),
 					Path:   depPath,
 					Parent: dep,
-					Deps:   nil,
 				}
-				if dep.Deps == nil {
-					dep.Deps = make(map[string]*Dependency)
-				}
-				dep.Deps[subDep.Path] = &subDep
-				depsPrune(&subDep, topdep)
-				subDeps = append(subDeps, &subDep)
+				depsPrune(subDep, topDep)
+				dep.Deps = append(dep.Deps, subDep)
 			}
 		}
 	}
 
-	if recursive && subDeps != nil {
-		for _, subDep := range subDeps {
+	sort.Sort(ByPath(dep.Deps))
+
+	if recursive {
+		for _, subDep := range dep.Deps {
 			if !subDep.Pruned {
 				if wg == nil {
-					depsRead(subDep, topdep, recursive, limiter, wg)
+					depsRead(subDep, topDep, recursive, limiter, wg)
 				} else {
 					wg.Add(1)
-					go depsRead(subDep, topdep, recursive, limiter, wg)
+					go depsRead(subDep, topDep, recursive, limiter, wg)
 				}
 			}
 		}
-	}
-}
-
-func depsPrettyPrint(dep *Dependency, depth int) {
-	if dep == nil || dep.Deps == nil {
-		return
-	}
-
-	keys := make([]string, 0, len(dep.Deps))
-	for key := range dep.Deps {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	for _, key := range keys {
-		subDep := dep.Deps[key]
-		fmt.Printf("%s%s => %s\n", strings.Repeat(" ", 4+2*depth), subDep.Name, subDep.Path)
-		depsPrettyPrint(subDep, depth+1)
 	}
 }
 
@@ -173,5 +163,16 @@ func DepsRead(file string, recursive bool, threads int) (*ToplevelDependency, er
 }
 
 func DepsPrettyPrint(dep *Dependency) {
-	depsPrettyPrint(dep, 0)
+	var printer func(dep *Dependency, depth int)
+	printer = func(dep *Dependency, depth int) {
+		if dep == nil || dep.Deps == nil {
+			return
+		}
+
+		for _, subDep := range dep.Deps {
+			fmt.Printf("%s%s => %s\n", strings.Repeat(" ", 4+2*depth), subDep.Name, subDep.Path)
+			printer(subDep, depth+1)
+		}
+	}
+	printer(dep, 0)
 }

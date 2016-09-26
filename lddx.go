@@ -66,8 +66,8 @@ func main() {
 
 	for _, arg := range args {
 		LogInfo("Processing %s", arg)
-		v, _ := IsMachoOrUniversal(arg)
-		LogNote("IsMacho? %v", v)
+		v, _ := IsFatMacho(arg)
+		LogNote("IsFatMacho? %v", v)
 		if v {
 			deps, _ := DepsRead(arg, opts.Recursive, opts.Threads)
 			DepsPrettyPrint(&deps.Dependency)

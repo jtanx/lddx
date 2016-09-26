@@ -13,10 +13,10 @@ const MH_CIGAM_64 = 0xcffaedfe
 const FAT_MAGIC = 0xcafebabe
 const FAG_CIGAM = 0xbebafeca
 
-// IsMachoOrUniversal reads the first four bytes of the given file to
+// IsFatMacho reads the first four bytes of the given file to
 // determine if it is either a Mach-O or Universal (fat) file.
 // On error, the result is false, and the error value is also returned.
-func IsMachoOrUniversal(file string) (bool, error) {
+func IsFatMacho(file string) (bool, error) {
 	fp, err := os.Open(file)
 	if err != nil {
 		return false, err
