@@ -11,12 +11,13 @@ import (
 )
 
 type Dependency struct {
-	Name   string
-	Path   string
-	Info   string
-	Parent *Dependency `json:"-"`
-	Pruned bool
-	Deps   []*Dependency
+	Name     string
+	Path     string
+	RealPath *string `json:",omitempty"`
+	Info     string
+	Parent   *Dependency `json:"-"`
+	Pruned   bool
+	Deps     []*Dependency
 }
 
 type ByPath []*Dependency
@@ -39,19 +40,48 @@ type DependencyGraph struct {
 
 var depRe = regexp.MustCompile(`(.*?)\s+\((compatibility[^)]+)\)$`)
 
+func depsIsSpecialPath(path string) bool {
+	return strings.HasPrefix(path, "@")
+}
+
+func depsGetRealPath(dep *Dependency) string {
+	if dep.RealPath != nil {
+		return *dep.RealPath
+	}
+	return dep.Path
+}
+
+func depsResolvePath(path string, dep *Dependency, opts *Options) (string, error) {
+	if depsIsSpecialPath(path) {
+		if strings.HasPrefix(path, "@executable_path/") {
+			if opts.ExecutablePath == "" {
+				return path, fmt.Errorf("%s: No executable path set.", path)
+			}
+			path = opts.ExecutablePath + path[len("@executable_path"):]
+		} else if strings.HasPrefix(path, "@loader_path/") {
+			path = filepath.Dir(depsGetRealPath(dep)) + path[len("@loader_path"):]
+		} else {
+			return path, fmt.Errorf("%s: Unsupported", path)
+		}
+	}
+
+	return ResolveAbsPath(path)
+}
+
 // depsPrune checks against the dependency graph to see if the current
 // dependency meets pruning criteria, and if so, prunes the given dependency.
 func depsPrune(dep *Dependency, graph *DependencyGraph) bool {
+	path := depsGetRealPath(dep)
 	// The toplevel dependencies may not be in FlatDeps.
 	// Check for a circular dependency here.
 	for _, topDep := range graph.TopDeps {
-		if topDep.Path == dep.Path {
+		if topDep.Path == path {
 			dep.Pruned = true
 			return true
 		}
 	}
 
-	if strings.HasPrefix(dep.Path, "/System") || strings.HasPrefix(dep.Path, "/usr/lib") {
+	if strings.HasPrefix(path, "/System") || strings.HasPrefix(path, "/usr/lib") {
 		dep.Pruned = true
 		return true
 	}
@@ -59,15 +89,15 @@ func depsPrune(dep *Dependency, graph *DependencyGraph) bool {
 	graph.fdLock.Lock()
 	defer graph.fdLock.Unlock()
 
-	if _, processed := graph.FlatDeps[dep.Path]; !processed {
-		graph.FlatDeps[dep.Path] = dep
+	if _, processed := graph.FlatDeps[path]; !processed {
+		graph.FlatDeps[path] = dep
 		return false
 	}
 	dep.Pruned = true
 	return true
 }
 
-func depsRead(dep *Dependency, graph *DependencyGraph, recursive bool, limiter chan int, wg *sync.WaitGroup) {
+func depsRead(dep *Dependency, graph *DependencyGraph, opts *Options, limiter chan int, wg *sync.WaitGroup) {
 	if wg != nil {
 		defer wg.Done()
 	}
@@ -77,16 +107,17 @@ func depsRead(dep *Dependency, graph *DependencyGraph, recursive bool, limiter c
 		defer func() { limiter <- 1 }()
 	}
 
-	if strings.HasPrefix(dep.Path, "@") {
-		LogError("%s: Special prefix handling not implemented", dep.Path)
+	path := depsGetRealPath(dep)
+	if depsIsSpecialPath(path) {
+		// We cannot process this dependency any further if we don't have
+		// the real path to this dependency.
 		return
 	}
-
 	// Run otool to figure out the deps
-	cmd := exec.Command("otool", "-L", dep.Path)
+	cmd := exec.Command("otool", "-L", path)
 	out, err := cmd.Output()
 	if err != nil {
-		LogError("Could not process dependencies for %s: %s", dep.Path, err)
+		LogError("otool failed for %s: %s", dep.Path, err)
 		return
 	}
 
@@ -94,18 +125,22 @@ func depsRead(dep *Dependency, graph *DependencyGraph, recursive bool, limiter c
 		match := depRe.FindStringSubmatch(val)
 		if match != nil {
 			depPath := strings.TrimSpace(match[1])
-			resolvedPath, err := filepath.EvalSymlinks(depPath)
+			resolvedPath, err := depsResolvePath(depPath, dep, opts)
 			if err != nil {
-				LogError("Could not evaluate dependency %s for %s", depPath, dep.Path)
-				resolvedPath = depPath
+				LogError("Could not resolve dependency %s for %s: %s", depPath, dep.Path, err)
+			} else if !depsIsSpecialPath(depPath) {
+				depPath = resolvedPath
 			}
 
-			if resolvedPath != dep.Path {
+			if depPath != dep.Path {
 				subDep := &Dependency{
-					Name:   filepath.Base(resolvedPath),
-					Path:   resolvedPath,
+					Name:   filepath.Base(depPath),
+					Path:   depPath,
 					Info:   strings.TrimSpace(match[2]),
 					Parent: dep,
+				}
+				if depPath != resolvedPath && err == nil {
+					subDep.RealPath = &resolvedPath
 				}
 				depsPrune(subDep, graph)
 				dep.Deps = append(dep.Deps, subDep)
@@ -115,41 +150,28 @@ func depsRead(dep *Dependency, graph *DependencyGraph, recursive bool, limiter c
 
 	sort.Sort(ByPath(dep.Deps))
 
-	if recursive {
+	if opts.Recursive {
 		for _, subDep := range dep.Deps {
 			if !subDep.Pruned {
 				if wg == nil {
-					depsRead(subDep, graph, recursive, limiter, wg)
+					depsRead(subDep, graph, opts, limiter, wg)
 				} else {
 					wg.Add(1)
-					go depsRead(subDep, graph, recursive, limiter, wg)
+					go depsRead(subDep, graph, opts, limiter, wg)
 				}
 			}
 		}
 	}
 }
 
-func DepsCheckOToolVersion() (string, error) {
-	cmd := exec.Command("otool", "--version")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("%s [%s]", err, strings.TrimSpace(string(out)))
-	}
-	return string(out), nil
-}
-
-func DepsRead(recursive bool, threads int, files ...string) (*DependencyGraph, error) {
+func DepsRead(opts *Options, files ...string) (*DependencyGraph, error) {
 	var deps []*Dependency
 	absFiles := make(map[string]bool)
 
 	// Reduce the file list to make it unique by the absolute path
 	for _, file := range files {
-		file, err := filepath.EvalSymlinks(file)
-		if err != nil {
-			return nil, err
-		}
+		file, err := ResolveAbsPath(file)
 
-		file, err = filepath.Abs(file)
 		if err != nil {
 			return nil, err
 		} else if isfm, err := IsFatMacho(file); err != nil || !isfm {
@@ -178,25 +200,34 @@ func DepsRead(recursive bool, threads int, files ...string) (*DependencyGraph, e
 		FlatDeps: make(map[string]*Dependency),
 	}
 
-	if !recursive || threads <= 1 {
+	if !opts.Recursive || opts.Threads <= 1 {
 		for _, dep := range graph.TopDeps {
-			depsRead(dep, graph, recursive, nil, nil)
+			depsRead(dep, graph, opts, nil, nil)
 		}
 	} else {
 		var wg sync.WaitGroup
-		limiter := make(chan int, threads)
-		for i := 0; i < threads; i++ {
+		limiter := make(chan int, opts.Threads)
+		for i := 0; i < opts.Threads; i++ {
 			limiter <- 1
 		}
 
 		for _, dep := range graph.TopDeps {
 			wg.Add(1)
-			go depsRead(dep, graph, true, limiter, &wg)
+			go depsRead(dep, graph, opts, limiter, &wg)
 		}
 		wg.Wait()
 	}
 
 	return graph, nil
+}
+
+func DepsCheckOToolVersion() (string, error) {
+	cmd := exec.Command("otool", "--version")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s [%s]", err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
 }
 
 func DepsPrettyPrint(dep *Dependency) {

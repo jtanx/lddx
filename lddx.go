@@ -12,12 +12,13 @@ import (
 )
 
 type Options struct {
-	NoColor   bool `short:"c" long:"no-color" description:"Colourised output"`
-	Quiet     bool `short:"q" long:"quiet" description:"Less verbose output"`
-	Version   bool `short:"v" long:"version" description:"Prints the version of lddx"`
-	Recursive bool `short:"r" long:"recursive" description:"Recursively find dependencies"`
-	Threads   int  `short:"t" long:"threads" default:"10" description:"Number of threads to use (specify 1 for reproducible results"`
-	Json      bool `short:"j" long:"json" description:"Dump dependencies in JSON format"`
+	NoColor        bool   `short:"c" long:"no-color" description:"Colourised output"`
+	Quiet          bool   `short:"q" long:"quiet" description:"Less verbose output"`
+	Version        bool   `short:"v" long:"version" description:"Prints the version of lddx"`
+	Recursive      bool   `short:"r" long:"recursive" description:"Recursively find dependencies"`
+	Threads        int    `short:"t" long:"threads" default:"10" description:"Number of threads to use (specify 1 for reproducible results"`
+	Json           bool   `short:"j" long:"json" description:"Dump dependencies in JSON format"`
+	ExecutablePath string `short:"e" long:"executable-path" description:"Executable path to use when resolving @executable_path dependencies"`
 }
 
 var logMutex sync.Mutex
@@ -67,7 +68,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	graph, err := DepsRead(opts.Recursive, opts.Threads, args...)
+	if opts.ExecutablePath != "" {
+		path, err := ResolveAbsPath(opts.ExecutablePath)
+		if err != nil {
+			LogError("Could not resolve executable path: %s", err)
+			os.Exit(1)
+		}
+		opts.ExecutablePath = path
+	}
+
+	graph, err := DepsRead(&opts, args...)
 	if err != nil {
 		LogError("Could not process dependencies: %s", err)
 		os.Exit(1)
