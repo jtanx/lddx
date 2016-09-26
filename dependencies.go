@@ -13,7 +13,8 @@ import (
 type Dependency struct {
 	Name   string
 	Path   string
-	Parent *Dependency
+	Info   string
+	Parent *Dependency `json:"-"`
 	Pruned bool
 	Deps   []*Dependency
 }
@@ -36,7 +37,7 @@ type DependencyGraph struct {
 	fdLock   sync.RWMutex
 }
 
-var depRe = regexp.MustCompile(`(.*?)\s+\(compatibility[^)]+\)`)
+var depRe = regexp.MustCompile(`(.*?)\s+\((compatibility[^)]+)\)$`)
 
 // depsPrune checks against the dependency graph to see if the current
 // dependency meets pruning criteria, and if so, prunes the given dependency.
@@ -93,16 +94,17 @@ func depsRead(dep *Dependency, graph *DependencyGraph, recursive bool, limiter c
 		match := depRe.FindStringSubmatch(val)
 		if match != nil {
 			depPath := strings.TrimSpace(match[1])
-			depPath, err := filepath.EvalSymlinks(depPath)
+			resolvedPath, err := filepath.EvalSymlinks(depPath)
 			if err != nil {
-				LogError("Could not evaluate dependency %s for %s", match[1], dep.Path)
-				continue
+				LogError("Could not evaluate dependency %s for %s", depPath, dep.Path)
+				resolvedPath = depPath
 			}
 
-			if depPath != dep.Path {
+			if resolvedPath != dep.Path {
 				subDep := &Dependency{
-					Name:   filepath.Base(depPath),
-					Path:   depPath,
+					Name:   filepath.Base(resolvedPath),
+					Path:   resolvedPath,
+					Info:   strings.TrimSpace(match[2]),
 					Parent: dep,
 				}
 				depsPrune(subDep, graph)
