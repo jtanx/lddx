@@ -40,26 +40,26 @@ type DependencyGraph struct {
 
 var depRe = regexp.MustCompile(`(.*?)\s+\((compatibility[^)]+)\)$`)
 
-func depsIsSpecialPath(path string) bool {
+func isSpecialPath(path string) bool {
 	return strings.HasPrefix(path, "@")
 }
 
-func depsGetRealPath(dep *Dependency) string {
+func getRealPath(dep *Dependency) string {
 	if dep.RealPath != nil {
 		return *dep.RealPath
 	}
 	return dep.Path
 }
 
-func depsResolvePath(path string, dep *Dependency, opts *Options) (string, error) {
-	if depsIsSpecialPath(path) {
+func resolvePath(path string, dep *Dependency, opts *Options) (string, error) {
+	if isSpecialPath(path) {
 		if strings.HasPrefix(path, "@executable_path/") {
 			if opts.ExecutablePath == "" {
 				return path, fmt.Errorf("%s: No executable path set.", path)
 			}
 			path = opts.ExecutablePath + path[len("@executable_path"):]
 		} else if strings.HasPrefix(path, "@loader_path/") {
-			path = filepath.Dir(depsGetRealPath(dep)) + path[len("@loader_path"):]
+			path = filepath.Dir(getRealPath(dep)) + path[len("@loader_path"):]
 		} else {
 			return path, fmt.Errorf("%s: Unsupported", path)
 		}
@@ -68,10 +68,10 @@ func depsResolvePath(path string, dep *Dependency, opts *Options) (string, error
 	return ResolveAbsPath(path)
 }
 
-// depsPrune checks against the dependency graph to see if the current
+// pruneDep checks against the dependency graph to see if the current
 // dependency meets pruning criteria, and if so, prunes the given dependency.
-func depsPrune(dep *Dependency, graph *DependencyGraph, opts *Options) bool {
-	path := depsGetRealPath(dep)
+func pruneDep(dep *Dependency, graph *DependencyGraph, opts *Options) bool {
+	path := getRealPath(dep)
 	// The toplevel dependencies may not be in FlatDeps.
 	// Check for a circular dependency here.
 	for _, topDep := range graph.TopDeps {
@@ -109,8 +109,8 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *Options, limiter ch
 		defer func() { limiter <- 1 }()
 	}
 
-	path := depsGetRealPath(dep)
-	if depsIsSpecialPath(path) {
+	path := getRealPath(dep)
+	if isSpecialPath(path) {
 		// We cannot process this dependency any further if we don't have
 		// the real path to this dependency.
 		return
@@ -127,10 +127,10 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *Options, limiter ch
 		match := depRe.FindStringSubmatch(val)
 		if match != nil {
 			depPath := strings.TrimSpace(match[1])
-			resolvedPath, err := depsResolvePath(depPath, dep, opts)
+			resolvedPath, err := resolvePath(depPath, dep, opts)
 			if err != nil {
 				LogError("Could not resolve dependency %s for %s: %s", depPath, dep.Path, err)
-			} else if !depsIsSpecialPath(depPath) {
+			} else if !isSpecialPath(depPath) {
 				depPath = resolvedPath
 			}
 
@@ -144,7 +144,7 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *Options, limiter ch
 				if depPath != resolvedPath && err == nil {
 					subDep.RealPath = &resolvedPath
 				}
-				depsPrune(subDep, graph, opts)
+				pruneDep(subDep, graph, opts)
 				dep.Deps = append(dep.Deps, subDep)
 			}
 		}
@@ -166,6 +166,8 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *Options, limiter ch
 	}
 }
 
+// DepsRead calculates the dependency graph for the list of files provided.
+// TODO(jtanx): Allow for parsing of directories
 func DepsRead(opts *Options, files ...string) (*DependencyGraph, error) {
 	var deps []*Dependency
 	absFiles := make(map[string]bool)
@@ -176,11 +178,11 @@ func DepsRead(opts *Options, files ...string) (*DependencyGraph, error) {
 
 		if err != nil {
 			return nil, err
-		} else if isfm, err := IsFatMacho(file); err != nil || !isfm {
+		} else if isfm, err := IsFatMachO(file); err != nil || !isfm {
 			if err != nil {
 				return nil, err
 			}
-			return nil, fmt.Errorf("%s: Not a Mach-O/Universal binary!")
+			return nil, fmt.Errorf("%s: Not a Mach-O/Universal binary!", file)
 		}
 
 		if !absFiles[file] {
@@ -202,14 +204,14 @@ func DepsRead(opts *Options, files ...string) (*DependencyGraph, error) {
 		FlatDeps: make(map[string]*Dependency),
 	}
 
-	if !opts.Recursive || opts.Threads <= 1 {
+	if !opts.Recursive || opts.Jobs <= 1 {
 		for _, dep := range graph.TopDeps {
 			depsRead(dep, graph, opts, nil, nil)
 		}
 	} else {
 		var wg sync.WaitGroup
-		limiter := make(chan int, opts.Threads)
-		for i := 0; i < opts.Threads; i++ {
+		limiter := make(chan int, opts.Jobs)
+		for i := 0; i < opts.Jobs; i++ {
 			limiter <- 1
 		}
 

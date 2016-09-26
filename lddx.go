@@ -16,11 +16,11 @@ type Options struct {
 	Quiet           bool     `short:"q" long:"quiet" description:"Less verbose output"`
 	Version         bool     `short:"v" long:"version" description:"Prints the version of lddx"`
 	Recursive       bool     `short:"r" long:"recursive" description:"Recursively find dependencies"`
-	Threads         int      `short:"t" long:"threads" default:"10" description:"Number of threads to use (specify 1 for reproducible results"`
-	Json            bool     `short:"j" long:"json" description:"Dump dependencies in JSON format"`
+	Jobs            int      `short:"j" long:"jobs" default:"10" description:"Number of files to process concurrently. Specify specify 1 for reproducible results"`
+	Json            bool     `short:"s" long:"json" description:"Dump dependencies in JSON format"`
 	ExecutablePath  string   `short:"e" long:"executable-path" description:"Executable path to use when resolving @executable_path dependencies"`
 	IgnoredPrefixes []string `short:"i" long:"ignore-prefix" description:"Specifies a library prefix to ignore when resolving dependencies"`
-	NoDefaultIgnore bool     `short:"d" long:"no-default-ignore" description:"By default, libraries under /System and /usr/lib are ignored from dependency resolution. Specify this flag to not ignore these."`
+	NoDefaultIgnore bool     `short:"d" long:"no-default-ignore" description:"By default, libraries under /System and /usr/lib are ignored from dependency resolution. Specify this flag to not ignore these"`
 	Collect         string   `short:"c" long:"collect" description:"Collects dependencies into the specified folder"`
 	Overwrite       bool     `short:"w" long:"overwrite" description:"Ignore and overwrite existing libraries in the collection folder"`
 }
@@ -70,13 +70,21 @@ func setIgnoredPrefixes(opts *Options) {
 }
 
 func main() {
-	args, err := flags.Parse(&opts)
+	color.Output = colorable.NewColorableStderr()
+	parser := flags.NewParser(&opts, flags.HelpFlag|flags.PassDoubleDash)
+	args, err := parser.Parse()
 	if err != nil {
-		fmt.Println(err)
+		switch er := err.(type) {
+		case *flags.Error:
+			if er.Type == flags.ErrHelp {
+				fmt.Println(err)
+				os.Exit(0)
+			}
+		}
+		LogError("%s", err)
 		os.Exit(1)
 	}
 
-	color.Output = colorable.NewColorableStderr()
 	color.NoColor = opts.NoColor
 	if opts.Version {
 		fmt.Println("lddx version 0.0.1")
