@@ -64,13 +64,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	for _, arg := range args {
-		LogInfo("Processing %s", arg)
-		v, _ := IsFatMacho(arg)
-		LogNote("IsFatMacho? %v", v)
-		if v {
-			deps, _ := DepsRead(arg, opts.Recursive, opts.Threads)
-			DepsPrettyPrint(&deps.Dependency)
+	graph, err := DepsRead(opts.Recursive, opts.Threads, args...)
+	if err != nil {
+		LogError("Could not process dependencies: %s", err)
+		os.Exit(1)
+	}
+
+	for _, dep := range graph.TopDeps {
+		if len(graph.TopDeps) > 1 {
+			fmt.Printf("%s:\n", dep.Path)
 		}
+		DepsPrettyPrint(dep)
 	}
 }

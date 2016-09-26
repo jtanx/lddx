@@ -30,22 +30,24 @@ func (v ByPath) Less(i, j int) bool {
 	return v[i].Path < v[j].Path
 }
 
-type ToplevelDependency struct {
-	Dependency
+type DependencyGraph struct {
+	TopDeps  []*Dependency
 	FlatDeps map[string]*Dependency
 	fdLock   sync.RWMutex
 }
 
 var depRe = regexp.MustCompile(`(.*?)\s+\(compatibility[^)]+\)`)
 
-// depsPrune checks against the toplevel dependency to see if the current
+// depsPrune checks against the dependency graph to see if the current
 // dependency meets pruning criteria, and if so, prunes the given dependency.
-func depsPrune(dep *Dependency, topDep *ToplevelDependency) bool {
-	// The toplevel dependency won't be in FlatDeps.
+func depsPrune(dep *Dependency, graph *DependencyGraph) bool {
+	// The toplevel dependencies may not be in FlatDeps.
 	// Check for a circular dependency here.
-	if topDep.Path == dep.Path {
-		dep.Pruned = true
-		return true
+	for _, topDep := range graph.TopDeps {
+		if topDep.Path == dep.Path {
+			dep.Pruned = true
+			return true
+		}
 	}
 
 	if strings.HasPrefix(dep.Path, "/System") || strings.HasPrefix(dep.Path, "/usr/lib") {
@@ -53,18 +55,18 @@ func depsPrune(dep *Dependency, topDep *ToplevelDependency) bool {
 		return true
 	}
 
-	topDep.fdLock.Lock()
-	defer topDep.fdLock.Unlock()
+	graph.fdLock.Lock()
+	defer graph.fdLock.Unlock()
 
-	if _, processed := topDep.FlatDeps[dep.Path]; !processed {
-		topDep.FlatDeps[dep.Path] = dep
+	if _, processed := graph.FlatDeps[dep.Path]; !processed {
+		graph.FlatDeps[dep.Path] = dep
 		return false
 	}
 	dep.Pruned = true
 	return true
 }
 
-func depsRead(dep *Dependency, topDep *ToplevelDependency, recursive bool, limiter chan int, wg *sync.WaitGroup) {
+func depsRead(dep *Dependency, graph *DependencyGraph, recursive bool, limiter chan int, wg *sync.WaitGroup) {
 	if wg != nil {
 		defer wg.Done()
 	}
@@ -91,13 +93,19 @@ func depsRead(dep *Dependency, topDep *ToplevelDependency, recursive bool, limit
 		match := depRe.FindStringSubmatch(val)
 		if match != nil {
 			depPath := strings.TrimSpace(match[1])
+			depPath, err := filepath.EvalSymlinks(depPath)
+			if err != nil {
+				LogError("Could not evaluate dependency %s for %s", match[1], dep.Path)
+				continue
+			}
+
 			if depPath != dep.Path {
 				subDep := &Dependency{
 					Name:   filepath.Base(depPath),
 					Path:   depPath,
 					Parent: dep,
 				}
-				depsPrune(subDep, topDep)
+				depsPrune(subDep, graph)
 				dep.Deps = append(dep.Deps, subDep)
 			}
 		}
@@ -109,10 +117,10 @@ func depsRead(dep *Dependency, topDep *ToplevelDependency, recursive bool, limit
 		for _, subDep := range dep.Deps {
 			if !subDep.Pruned {
 				if wg == nil {
-					depsRead(subDep, topDep, recursive, limiter, wg)
+					depsRead(subDep, graph, recursive, limiter, wg)
 				} else {
 					wg.Add(1)
-					go depsRead(subDep, topDep, recursive, limiter, wg)
+					go depsRead(subDep, graph, recursive, limiter, wg)
 				}
 			}
 		}
@@ -128,38 +136,65 @@ func DepsCheckOToolVersion() (string, error) {
 	return string(out), nil
 }
 
-func DepsRead(file string, recursive bool, threads int) (*ToplevelDependency, error) {
-	file, err := filepath.Abs(file)
-	if err != nil {
-		return nil, err
+func DepsRead(recursive bool, threads int, files ...string) (*DependencyGraph, error) {
+	var deps []*Dependency
+	absFiles := make(map[string]bool)
+
+	// Reduce the file list to make it unique by the absolute path
+	for _, file := range files {
+		file, err := filepath.EvalSymlinks(file)
+		if err != nil {
+			return nil, err
+		}
+
+		file, err = filepath.Abs(file)
+		if err != nil {
+			return nil, err
+		} else if isfm, err := IsFatMacho(file); err != nil || !isfm {
+			if err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("%s: Not a Mach-O/Universal binary!")
+		}
+
+		if !absFiles[file] {
+			dep := &Dependency{
+				Name: filepath.Base(file),
+				Path: file,
+			}
+			deps = append(deps, dep)
+			absFiles[file] = true
+		}
 	}
 
-	baseDep := &ToplevelDependency{
-		Dependency: Dependency{
-			Name: filepath.Base(file),
-			Path: file,
-		},
+	if deps == nil {
+		return nil, fmt.Errorf("No files specified")
+	}
+
+	graph := &DependencyGraph{
+		TopDeps:  deps,
 		FlatDeps: make(map[string]*Dependency),
 	}
 
-	if recursive {
-		if threads <= 1 {
-			depsRead(&baseDep.Dependency, baseDep, true, nil, nil)
-		} else {
-			var wg sync.WaitGroup
-			limiter := make(chan int, threads)
-			for i := 0; i < threads; i++ {
-				limiter <- 1
-			}
-			wg.Add(1)
-			go depsRead(&baseDep.Dependency, baseDep, true, limiter, &wg)
-			wg.Wait()
+	if !recursive || threads <= 1 {
+		for _, dep := range graph.TopDeps {
+			depsRead(dep, graph, recursive, nil, nil)
 		}
 	} else {
-		depsRead(&baseDep.Dependency, baseDep, false, nil, nil)
+		var wg sync.WaitGroup
+		limiter := make(chan int, threads)
+		for i := 0; i < threads; i++ {
+			limiter <- 1
+		}
+
+		for _, dep := range graph.TopDeps {
+			wg.Add(1)
+			go depsRead(dep, graph, true, limiter, &wg)
+		}
+		wg.Wait()
 	}
 
-	return baseDep, nil
+	return graph, nil
 }
 
 func DepsPrettyPrint(dep *Dependency) {
