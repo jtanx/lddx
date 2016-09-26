@@ -70,7 +70,7 @@ func depsResolvePath(path string, dep *Dependency, opts *Options) (string, error
 
 // depsPrune checks against the dependency graph to see if the current
 // dependency meets pruning criteria, and if so, prunes the given dependency.
-func depsPrune(dep *Dependency, graph *DependencyGraph) bool {
+func depsPrune(dep *Dependency, graph *DependencyGraph, opts *Options) bool {
 	path := depsGetRealPath(dep)
 	// The toplevel dependencies may not be in FlatDeps.
 	// Check for a circular dependency here.
@@ -81,9 +81,11 @@ func depsPrune(dep *Dependency, graph *DependencyGraph) bool {
 		}
 	}
 
-	if strings.HasPrefix(path, "/System") || strings.HasPrefix(path, "/usr/lib") {
-		dep.Pruned = true
-		return true
+	for _, prefix := range opts.IgnoredPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			dep.Pruned = true
+			return true
+		}
 	}
 
 	graph.fdLock.Lock()
@@ -142,7 +144,7 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *Options, limiter ch
 				if depPath != resolvedPath && err == nil {
 					subDep.RealPath = &resolvedPath
 				}
-				depsPrune(subDep, graph)
+				depsPrune(subDep, graph, opts)
 				dep.Deps = append(dep.Deps, subDep)
 			}
 		}
