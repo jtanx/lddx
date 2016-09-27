@@ -9,7 +9,7 @@ import (
 	. "github.com/jtanx/lddx/lddx"
 )
 
-type Options struct {
+type options struct {
 	NoColor         bool     `short:"n" long:"no-color" description:"Colourised output"`
 	Quiet           bool     `short:"q" long:"quiet" description:"Less verbose output"`
 	Version         bool     `short:"v" long:"version" description:"Prints the version of lddx"`
@@ -23,7 +23,7 @@ type Options struct {
 	Overwrite       bool     `short:"w" long:"overwrite" description:"Ignore and overwrite existing libraries in the collection folder"`
 }
 
-func setIgnoredPrefixes(opts *Options, depOpts *DependencyOptions) {
+func setIgnoredPrefixes(opts *options, depOpts *DependencyOptions) {
 	ignoredPrefixes := make(map[string]bool)
 	if !opts.NoDefaultIgnore {
 		ignoredPrefixes["/System"] = true
@@ -40,7 +40,7 @@ func setIgnoredPrefixes(opts *Options, depOpts *DependencyOptions) {
 }
 
 func main() {
-	var opts Options
+	var opts options
 	parser := flags.NewParser(&opts, flags.HelpFlag|flags.PassDoubleDash)
 	args, err := parser.Parse()
 	if err != nil {

@@ -31,7 +31,7 @@ func TestIsFatMachO(t *testing.T) {
 		} else if err == nil && test.expectError {
 			t.Errorf("File %s: Expected error but got nil", test.file)
 		} else if result != test.expectedResult {
-			t.Errorf("File %s: Expected result %v but got %v", test.expectedResult, result)
+			t.Errorf("File %s: Expected result %v but got %v", test.file, test.expectedResult, result)
 		}
 	}
 }

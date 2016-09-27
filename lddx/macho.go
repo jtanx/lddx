@@ -6,12 +6,12 @@ import (
 	"os"
 )
 
-const MH_MAGIC = 0xfeedface
-const MH_CIGAM = 0xcefaedfe
-const MH_MAGIC_64 = 0xfeedfacf
-const MH_CIGAM_64 = 0xcffaedfe
-const FAT_MAGIC = 0xcafebabe
-const FAG_CIGAM = 0xbebafeca
+const mhMagic = 0xfeedface
+const mhCigam = 0xcefaedfe
+const mhMagic64 = 0xfeedfacf
+const mhCigam64 = 0xcffaedfe
+const fatMagic = 0xcafebabe
+const fatCigam = 0xbebafeca
 
 // IsFatMachO reads the first four bytes of the given file to
 // determine if it is either a Mach-O or Universal (fat) file.
@@ -33,7 +33,7 @@ func IsFatMachO(file string) (bool, error) {
 
 	magic := binary.LittleEndian.Uint32(bytes)
 
-	return magic == MH_MAGIC || magic == MH_CIGAM ||
-		magic == MH_MAGIC_64 || magic == MH_CIGAM_64 ||
-		magic == FAT_MAGIC || magic == FAG_CIGAM, nil
+	return magic == mhMagic || magic == mhCigam ||
+		magic == mhMagic64 || magic == mhCigam64 ||
+		magic == fatMagic || magic == fatCigam, nil
 }

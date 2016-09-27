@@ -10,6 +10,8 @@ import (
 	"sync"
 )
 
+// DependencyOptions specifies the options to be used
+// while calculating the dependency graph.
 type DependencyOptions struct {
 	ExecutablePath  string
 	IgnoredPrefixes []string
@@ -17,6 +19,8 @@ type DependencyOptions struct {
 	Jobs            int
 }
 
+// Dependency contains information about a file and any
+// dependencies that it has.
 type Dependency struct {
 	Name     string
 	Path     string
@@ -27,22 +31,34 @@ type Dependency struct {
 	Deps     []*Dependency
 }
 
+// ByPath sorts a Dependency slice by the Path field
 type ByPath []*Dependency
 
+// Len returns the length of the slice
 func (v ByPath) Len() int {
 	return len(v)
 }
+
+// Swap swaps two values in the slice
 func (v ByPath) Swap(i, j int) {
 	v[i], v[j] = v[j], v[i]
 }
+
+// Less compares the Path fields of two entries in the slice
 func (v ByPath) Less(i, j int) bool {
 	return v[i].Path < v[j].Path
 }
 
+// DependencyGraph contains information about the dependencies
+// for a collection of files.
 type DependencyGraph struct {
-	TopDeps  []*Dependency
+	// TopDeps is a slice of top level dependencies
+	TopDeps []*Dependency
+	// FlatDeps is a map containing all unique dependencies referenced
+	// by the top level dependencies
 	FlatDeps map[string]*Dependency
-	fdLock   sync.RWMutex
+	// fdLock is used to control concurrent access to FlatDeps.
+	fdLock sync.RWMutex
 }
 
 var depRe = regexp.MustCompile(`(.*?)\s+\((compatibility[^)]+)\)$`)
@@ -232,6 +248,8 @@ func DepsRead(opts DependencyOptions, files ...string) (*DependencyGraph, error)
 	return graph, nil
 }
 
+// DepsCheckOToolVersion obtains the output from otool --version,
+// or an error if such output could not be obtained.
 func DepsCheckOToolVersion() (string, error) {
 	cmd := exec.Command("otool", "--version")
 	out, err := cmd.CombinedOutput()
@@ -241,6 +259,8 @@ func DepsCheckOToolVersion() (string, error) {
 	return string(out), nil
 }
 
+// DepsPrettyPrint prints a dependency graph in a format similar
+// to the output from ldd.
 func DepsPrettyPrint(dep *Dependency) {
 	var printer func(dep *Dependency, depth int)
 	printer = func(dep *Dependency, depth int) {
