@@ -23,13 +23,15 @@ type DependencyOptions struct {
 // Dependency contains information about a file and any
 // dependencies that it has.
 type Dependency struct {
-	Name     string
-	Path     string
-	RealPath *string `json:",omitempty"`
-	Info     string
-	Parent   *Dependency `json:"-"`
-	Pruned   bool
-	Deps     []*Dependency
+	Name        string
+	Path        string
+	RealPath    *string `json:",omitempty"`
+	Info        string
+	Parent      *Dependency `json:"-"`
+	Pruned      bool
+	NotResolved bool
+	IsWeakDep   bool
+	Deps        []*Dependency
 }
 
 // ByPath sorts a Dependency slice by the Path field
@@ -53,16 +55,12 @@ func (v ByPath) Less(i, j int) bool {
 // DependencyGraph contains information about the dependencies
 // for a collection of files.
 type DependencyGraph struct {
-	// TopDeps is a slice of top level dependencies
-	TopDeps []*Dependency
-	// FlatDeps is a map containing all unique dependencies referenced
-	// by the top level dependencies
-	FlatDeps map[string]*Dependency
-	// fdLock is used to control concurrent access to FlatDeps.
-	fdLock sync.RWMutex
+	TopDeps  []*Dependency          // Slice of top level dependencies
+	FlatDeps map[string]*Dependency // Contains all unique, non-pruned referenced dependencies
+	fdLock   sync.RWMutex           // Used to control concurrent access to FlatDeps
 }
 
-var depRe = regexp.MustCompile(`(.*?)\s+\((compatibility[^)]+)\)$`)
+var depRe = regexp.MustCompile(`\s*name (.*) \(offset.*\)$`)
 
 func isSpecialPath(path string) bool {
 	return strings.HasPrefix(path, "@")
@@ -147,51 +145,70 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 		return
 	}
 	// Run otool to figure out the deps
-	out, err := exec.Command("otool", "-L", path).Output()
+	out, err := exec.Command("otool", "-l", path).Output()
 	if err != nil {
 		LogError("otool failed for %s: %s", dep.Path, err)
+		dep.NotResolved = true
 		return
 	}
 
 	processedDeps := make(map[string]bool)
-	for _, val := range strings.Split(string(out), "\n") {
-		match := depRe.FindStringSubmatch(val)
-		if match != nil {
-			depPath := strings.TrimSpace(match[1])
-			if processedDeps[depPath] {
-				// Looks like otool doubled up an entry?
-				continue
-			}
-			processedDeps[depPath] = true
+	output := strings.Split(string(out), "\n")
+	for i := 0; i < len(output); i++ {
+		line := strings.TrimSpace(output[i])
+		isWeakDep := (line == "cmd LC_LOAD_WEAK_DYLIB")
 
-			resolvedPath, err := resolvePath(depPath, dep, opts)
-			if err != nil {
-				LogError("Could not resolve dependency %s for %s: %s", depPath, dep.Path, err)
-			} else if !isSpecialPath(depPath) {
-				depPath = resolvedPath
-			}
-
-			if depPath != dep.Path {
-				subDep := &Dependency{
-					Name:   filepath.Base(depPath),
-					Path:   depPath,
-					Info:   strings.TrimSpace(match[2]),
-					Parent: dep,
-				}
-				if depPath != resolvedPath && err == nil {
-					subDep.RealPath = &resolvedPath
-				}
-				pruneDep(subDep, graph, opts)
-				dep.Deps = append(dep.Deps, subDep)
-			}
+		if !isWeakDep && line != "cmd LC_LOAD_DYLIB" {
+			continue
+		} else if i+5 >= len(output) {
+			LogWarn("Malformed output from otool at line %d: %s", i+1, line)
+			break
 		}
+
+		match := depRe.FindStringSubmatch(output[i+2])
+		if match == nil {
+			LogWarn("Unexpected otool output at line %d: %s", i+1, output[i+2])
+			i += 5
+			continue
+		}
+
+		depPath := strings.TrimSpace(match[1])
+		if processedDeps[depPath] {
+			// Looks like otool doubled up an entry?
+			continue
+		}
+		processedDeps[depPath] = true
+
+		resolvedPath, err := resolvePath(depPath, dep, opts)
+		if err != nil {
+			LogWarn("Could not resolve dependency %s for %s: %s (weak: %v)",
+				depPath, dep.Path, err, isWeakDep)
+		} else if !isSpecialPath(depPath) {
+			depPath = resolvedPath
+		}
+
+		subDep := &Dependency{
+			Name:        filepath.Base(depPath),
+			Path:        depPath,
+			Info:        strings.TrimSpace(output[i+5]) + ", " + strings.TrimSpace(output[i+4]),
+			NotResolved: err != nil,
+			IsWeakDep:   isWeakDep,
+			Parent:      dep,
+		}
+		if depPath != resolvedPath && err == nil {
+			subDep.RealPath = &resolvedPath
+		}
+		pruneDep(subDep, graph, opts)
+		dep.Deps = append(dep.Deps, subDep)
+
+		i += 5
 	}
 
 	sort.Sort(ByPath(dep.Deps))
 
 	if opts.Recursive {
 		for _, subDep := range dep.Deps {
-			if !subDep.Pruned {
+			if !subDep.Pruned && !subDep.NotResolved {
 				if wg == nil {
 					depsRead(subDep, graph, opts, limiter, wg)
 				} else {
@@ -204,7 +221,6 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 }
 
 // DepsRead calculates the dependency graph for the list of files provided.
-// TODO(jtanx): Allow for parsing of directories
 func DepsRead(opts DependencyOptions, files ...string) (*DependencyGraph, error) {
 	var deps []*Dependency
 	absFiles := make(map[string]bool)
