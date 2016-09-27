@@ -1,4 +1,4 @@
-package main
+package lddx
 
 import (
 	"fmt"
@@ -9,6 +9,13 @@ import (
 	"strings"
 	"sync"
 )
+
+type DependencyOptions struct {
+	ExecutablePath  string
+	IgnoredPrefixes []string
+	Recursive       bool
+	Jobs            int
+}
 
 type Dependency struct {
 	Name     string
@@ -51,11 +58,11 @@ func getRealPath(dep *Dependency) string {
 	return dep.Path
 }
 
-func resolvePath(path string, dep *Dependency, opts *Options) (string, error) {
+func resolvePath(path string, dep *Dependency, opts *DependencyOptions) (string, error) {
 	if isSpecialPath(path) {
 		if strings.HasPrefix(path, "@executable_path/") {
 			if opts.ExecutablePath == "" {
-				return path, fmt.Errorf("%s: No executable path set.", path)
+				return path, fmt.Errorf("%s: No executable path set", path)
 			}
 			path = opts.ExecutablePath + path[len("@executable_path"):]
 		} else if strings.HasPrefix(path, "@loader_path/") {
@@ -70,7 +77,7 @@ func resolvePath(path string, dep *Dependency, opts *Options) (string, error) {
 
 // pruneDep checks against the dependency graph to see if the current
 // dependency meets pruning criteria, and if so, prunes the given dependency.
-func pruneDep(dep *Dependency, graph *DependencyGraph, opts *Options) bool {
+func pruneDep(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions) bool {
 	path := getRealPath(dep)
 	// The toplevel dependencies may not be in FlatDeps.
 	// Check for a circular dependency here.
@@ -99,7 +106,7 @@ func pruneDep(dep *Dependency, graph *DependencyGraph, opts *Options) bool {
 	return true
 }
 
-func depsRead(dep *Dependency, graph *DependencyGraph, opts *Options, limiter chan int, wg *sync.WaitGroup) {
+func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, limiter chan int, wg *sync.WaitGroup) {
 	if wg != nil {
 		defer wg.Done()
 	}
@@ -168,7 +175,7 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *Options, limiter ch
 
 // DepsRead calculates the dependency graph for the list of files provided.
 // TODO(jtanx): Allow for parsing of directories
-func DepsRead(opts *Options, files ...string) (*DependencyGraph, error) {
+func DepsRead(opts DependencyOptions, files ...string) (*DependencyGraph, error) {
 	var deps []*Dependency
 	absFiles := make(map[string]bool)
 
@@ -182,7 +189,7 @@ func DepsRead(opts *Options, files ...string) (*DependencyGraph, error) {
 			if err != nil {
 				return nil, err
 			}
-			return nil, fmt.Errorf("%s: Not a Mach-O/Universal binary!", file)
+			return nil, fmt.Errorf("%s: Not a Mach-O/Universal binary", file)
 		}
 
 		if !absFiles[file] {
@@ -206,7 +213,7 @@ func DepsRead(opts *Options, files ...string) (*DependencyGraph, error) {
 
 	if !opts.Recursive || opts.Jobs <= 1 {
 		for _, dep := range graph.TopDeps {
-			depsRead(dep, graph, opts, nil, nil)
+			depsRead(dep, graph, &opts, nil, nil)
 		}
 	} else {
 		var wg sync.WaitGroup
@@ -217,7 +224,7 @@ func DepsRead(opts *Options, files ...string) (*DependencyGraph, error) {
 
 		for _, dep := range graph.TopDeps {
 			wg.Add(1)
-			go depsRead(dep, graph, opts, limiter, &wg)
+			go depsRead(dep, graph, &opts, limiter, &wg)
 		}
 		wg.Wait()
 	}

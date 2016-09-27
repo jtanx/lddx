@@ -4,11 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sync"
 
-	"github.com/fatih/color"
 	"github.com/jessevdk/go-flags"
-	"github.com/mattn/go-colorable"
+	. "github.com/jtanx/lddx/lddx"
 )
 
 type Options struct {
@@ -17,7 +15,7 @@ type Options struct {
 	Version         bool     `short:"v" long:"version" description:"Prints the version of lddx"`
 	Recursive       bool     `short:"r" long:"recursive" description:"Recursively find dependencies"`
 	Jobs            int      `short:"j" long:"jobs" default:"10" description:"Number of files to process concurrently. Specify specify 1 for reproducible results"`
-	Json            bool     `short:"s" long:"json" description:"Dump dependencies in JSON format"`
+	JSON            bool     `short:"s" long:"json" description:"Dump dependencies in JSON format"`
 	ExecutablePath  string   `short:"e" long:"executable-path" description:"Executable path to use when resolving @executable_path dependencies"`
 	IgnoredPrefixes []string `short:"i" long:"ignore-prefix" description:"Specifies a library prefix to ignore when resolving dependencies"`
 	NoDefaultIgnore bool     `short:"d" long:"no-default-ignore" description:"By default, libraries under /System and /usr/lib are ignored from dependency resolution. Specify this flag to not ignore these"`
@@ -25,34 +23,7 @@ type Options struct {
 	Overwrite       bool     `short:"w" long:"overwrite" description:"Ignore and overwrite existing libraries in the collection folder"`
 }
 
-var logMutex sync.Mutex
-var opts Options
-
-func LogError(format string, args ...interface{}) {
-	logMutex.Lock()
-	defer logMutex.Unlock()
-	color.Red(format, args...)
-}
-
-func LogInfo(format string, args ...interface{}) {
-	if opts.Quiet {
-		return
-	}
-	logMutex.Lock()
-	defer logMutex.Unlock()
-	color.Green(format, args...)
-}
-
-func LogNote(format string, args ...interface{}) {
-	if opts.Quiet {
-		return
-	}
-	logMutex.Lock()
-	defer logMutex.Unlock()
-	color.Yellow(format, args...)
-}
-
-func setIgnoredPrefixes(opts *Options) {
+func setIgnoredPrefixes(opts *Options, depOpts *DependencyOptions) {
 	ignoredPrefixes := make(map[string]bool)
 	if !opts.NoDefaultIgnore {
 		ignoredPrefixes["/System"] = true
@@ -62,15 +33,14 @@ func setIgnoredPrefixes(opts *Options) {
 	for _, prefix := range opts.IgnoredPrefixes {
 		ignoredPrefixes[prefix] = true
 	}
-	opts.IgnoredPrefixes = nil
 
-	for prefix, _ := range ignoredPrefixes {
-		opts.IgnoredPrefixes = append(opts.IgnoredPrefixes, prefix)
+	for prefix := range ignoredPrefixes {
+		depOpts.IgnoredPrefixes = append(depOpts.IgnoredPrefixes, prefix)
 	}
 }
 
 func main() {
-	color.Output = colorable.NewColorableStderr()
+	var opts Options
 	parser := flags.NewParser(&opts, flags.HelpFlag|flags.PassDoubleDash)
 	args, err := parser.Parse()
 	if err != nil {
@@ -85,16 +55,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	color.NoColor = opts.NoColor
 	if opts.Version {
 		fmt.Println("lddx version 0.0.1")
 		os.Exit(0)
 	}
 
+	LogInit(opts.NoColor, opts.Quiet)
 	if _, err := DepsCheckOToolVersion(); err != nil {
 		LogError("Could not run otool: %s", err)
 		LogError("Ensure you have the Command Line Tools installed.")
 		os.Exit(1)
+	}
+
+	depOpts := DependencyOptions{
+		Recursive: opts.Recursive,
+		Jobs:      opts.Jobs,
 	}
 
 	if opts.ExecutablePath != "" {
@@ -103,17 +78,17 @@ func main() {
 			LogError("Could not resolve executable path: %s", err)
 			os.Exit(1)
 		}
-		opts.ExecutablePath = path
+		depOpts.ExecutablePath = path
 	}
 
-	setIgnoredPrefixes(&opts)
-	graph, err := DepsRead(&opts, args...)
+	setIgnoredPrefixes(&opts, &depOpts)
+	graph, err := DepsRead(depOpts, args...)
 	if err != nil {
 		LogError("Could not process dependencies: %s", err)
 		os.Exit(1)
 	}
 
-	if opts.Json {
+	if opts.JSON {
 		if out, err := json.MarshalIndent(graph, "", "\t"); err != nil {
 			LogError("Could not serialise as JSON: %s", err)
 		} else {

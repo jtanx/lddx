@@ -1,4 +1,4 @@
-package main
+package lddx
 
 import (
 	"encoding/binary"
