@@ -23,15 +23,16 @@ type DependencyOptions struct {
 // Dependency contains information about a file and any
 // dependencies that it has.
 type Dependency struct {
-	Name        string
-	Path        string
-	RealPath    *string `json:",omitempty"`
-	Info        string
-	Parent      *Dependency `json:"-"`
-	Pruned      bool
-	NotResolved bool
-	IsWeakDep   bool
-	Deps        []*Dependency
+	Name             string
+	Path             string
+	RealPath         *string `json:",omitempty"`
+	Info             string
+	Parent           *Dependency `json:"-"`
+	Pruned           bool
+	PrunedByFlatDeps bool
+	NotResolved      bool
+	IsWeakDep        bool
+	Deps             []*Dependency
 }
 
 // ByPath sorts a Dependency slice by the Path field
@@ -62,11 +63,11 @@ type DependencyGraph struct {
 
 var depRe = regexp.MustCompile(`\s*name (.*) \(offset.*\)$`)
 
-func isSpecialPath(path string) bool {
+func IsSpecialPath(path string) bool {
 	return strings.HasPrefix(path, "@")
 }
 
-func getRealPath(dep *Dependency) string {
+func GetRealPath(dep *Dependency) string {
 	if dep.RealPath != nil {
 		return *dep.RealPath
 	}
@@ -74,14 +75,14 @@ func getRealPath(dep *Dependency) string {
 }
 
 func resolvePath(path string, dep *Dependency, opts *DependencyOptions) (string, error) {
-	if isSpecialPath(path) {
+	if IsSpecialPath(path) {
 		if strings.HasPrefix(path, "@executable_path/") {
 			if opts.ExecutablePath == "" {
 				return path, fmt.Errorf("%s: No executable path set", path)
 			}
 			path = opts.ExecutablePath + path[len("@executable_path"):]
 		} else if strings.HasPrefix(path, "@loader_path/") {
-			path = filepath.Dir(getRealPath(dep)) + path[len("@loader_path"):]
+			path = filepath.Dir(GetRealPath(dep)) + path[len("@loader_path"):]
 		} else {
 			return path, fmt.Errorf("%s: Unsupported", path)
 		}
@@ -93,7 +94,7 @@ func resolvePath(path string, dep *Dependency, opts *DependencyOptions) (string,
 // pruneDep checks against the dependency graph to see if the current
 // dependency meets pruning criteria, and if so, prunes the given dependency.
 func pruneDep(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions) bool {
-	path := getRealPath(dep)
+	path := GetRealPath(dep)
 	// The toplevel dependencies may not be in FlatDeps.
 	// Check for a circular dependency here.
 	for _, topDep := range graph.TopDeps {
@@ -125,6 +126,7 @@ func pruneDep(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions) 
 		return false
 	}
 	dep.Pruned = true
+	dep.PrunedByFlatDeps = true
 	return true
 }
 
@@ -138,8 +140,8 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 		defer func() { limiter <- 1 }()
 	}
 
-	path := getRealPath(dep)
-	if isSpecialPath(path) {
+	path := GetRealPath(dep)
+	if IsSpecialPath(path) {
 		// We cannot process this dependency any further if we don't have
 		// the real path to this dependency.
 		return
@@ -173,19 +175,18 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 		}
 
 		depPath := strings.TrimSpace(match[1])
-		if processedDeps[depPath] {
-			// Looks like otool doubled up an entry?
-			continue
-		}
-		processedDeps[depPath] = true
-
 		resolvedPath, err := resolvePath(depPath, dep, opts)
 		if err != nil {
 			LogWarn("Could not resolve dependency %s for %s: %s (weak: %v)",
 				depPath, dep.Path, err, isWeakDep)
-		} else if !isSpecialPath(depPath) {
-			depPath = resolvedPath
+			resolvedPath = depPath
 		}
+
+		if processedDeps[resolvedPath] {
+			// Looks like otool doubled up an entry?
+			continue
+		}
+		processedDeps[resolvedPath] = true
 
 		subDep := &Dependency{
 			Name:        filepath.Base(depPath),
@@ -195,7 +196,7 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 			IsWeakDep:   isWeakDep,
 			Parent:      dep,
 		}
-		if depPath != resolvedPath && err == nil {
+		if depPath != resolvedPath {
 			subDep.RealPath = &resolvedPath
 		}
 		pruneDep(subDep, graph, opts)

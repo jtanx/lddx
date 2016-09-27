@@ -10,18 +10,21 @@ import (
 )
 
 type options struct {
-	NoColor         bool     `short:"n" long:"no-color" description:"Colourised output"`
-	Quiet           bool     `short:"q" long:"quiet" description:"Less verbose output"`
-	Version         bool     `short:"v" long:"version" description:"Prints the version of lddx"`
-	Recursive       bool     `short:"r" long:"recursive" description:"Recursively find dependencies"`
-	Jobs            int      `short:"j" long:"jobs" default:"10" description:"Number of files to process concurrently. Specify specify 1 for reproducible results"`
-	JSON            bool     `short:"s" long:"json" description:"Dump dependencies in JSON format"`
-	ExecutablePath  string   `short:"e" long:"executable-path" description:"Executable path to use when resolving @executable_path dependencies"`
-	IgnoredPrefixes []string `short:"i" long:"ignore-prefix" description:"Specifies a library prefix to ignore when resolving dependencies"`
-	IgnoredFiles    []string `short:"x" long:"ignore-file" description:"Specifies a file (e.g. libz.dylib) to ignore when resolving dependencies (case sensitive)"`
-	NoDefaultIgnore bool     `short:"d" long:"no-default-ignore" description:"By default, libraries under /System and /usr/lib are ignored from dependency resolution. Specify this flag to not ignore these"`
-	Collect         string   `short:"c" long:"collect" description:"Collects dependencies into the specified folder"`
-	Overwrite       bool     `short:"w" long:"overwrite" description:"Ignore and overwrite existing libraries in the collection folder"`
+	NoColor            bool     `short:"n" long:"no-color" description:"Colourised output"`
+	Quiet              bool     `short:"q" long:"quiet" description:"Less verbose output"`
+	Version            bool     `short:"v" long:"version" description:"Prints the version of lddx"`
+	Recursive          bool     `short:"r" long:"recursive" description:"Recursively find dependencies"`
+	Jobs               int      `short:"j" long:"jobs" default:"10" description:"Number of files to process concurrently. Specify specify 1 for reproducible results"`
+	JSON               bool     `short:"s" long:"json" description:"Dump dependencies in JSON format"`
+	ExecutablePath     string   `short:"e" long:"executable-path" description:"Executable path to use when resolving @executable_path dependencies"`
+	IgnoredPrefixes    []string `short:"i" long:"ignore-prefix" description:"Specifies a library prefix to ignore when resolving dependencies"`
+	IgnoredFiles       []string `short:"x" long:"ignore-file" description:"Specifies a file (e.g. libz.dylib) to ignore when resolving dependencies (case sensitive)"`
+	CollectOrder       []string `short:"l" long:"collect-order" description:"Specifies a prefix to prefer when resolving conflicts in library collection"`
+	NoDefaultIgnore    bool     `short:"d" long:"no-default-ignore" description:"By default, libraries under /System and /usr/lib are ignored from dependency resolution. Specify this flag to not ignore these"`
+	Collect            string   `short:"c" long:"collect" description:"Collects dependencies into the specified folder"`
+	Overwrite          bool     `short:"w" long:"overwrite" description:"Ignore and overwrite existing libraries in the collection folder"`
+	ModifySpecialPaths bool     `short:"m" long:"modify-special-paths" description:"Collect and modify special paths (e.g. @executable_path/@loader_path) when collecting dependencies"`
+	CollectFrameworks  bool     `short:"f" long:"collect-frameworks" descrption:"Include Framework libraries in the collection"`
 }
 
 func setIgnoredPrefixes(opts *options, depOpts *DependencyOptions) {
@@ -132,4 +135,24 @@ func main() {
 			DepsPrettyPrint(dep)
 		}
 	}
+
+	if opts.Collect != "" {
+		collectorOpts := CollectorOptions{
+			Folder:             opts.Collect,
+			PreferredOrder:     opts.CollectOrder,
+			Overwrite:          opts.Overwrite,
+			Jobs:               opts.Jobs,
+			ModifySpecialPaths: opts.ModifySpecialPaths,
+			CollectFrameworks:  opts.CollectFrameworks,
+		}
+
+		if err := CollectDeps(graph, &collectorOpts); err != nil {
+			LogError("Could not collect dependencies: %s", err)
+			os.Exit(1)
+		} else if err := FixupToplevels(graph, &collectorOpts); err != nil {
+			LogError("Could not fixup toplevels: %s", err)
+			os.Exit(1)
+		}
+	}
+
 }
