@@ -2,8 +2,9 @@ package lddx
 
 import (
 	"encoding/binary"
-	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 )
 
 const mhMagic = 0xfeedface
@@ -25,10 +26,10 @@ func IsFatMachO(file string) (bool, error) {
 
 	bytes := make([]byte, 4)
 	if num, err := fp.Read(bytes); num != 4 || err != nil {
-		if err != nil {
+		if err != nil && err != io.EOF {
 			return false, err
 		}
-		return false, fmt.Errorf("Could not read magic header")
+		return false, nil
 	}
 
 	magic := binary.LittleEndian.Uint32(bytes)
@@ -36,4 +37,27 @@ func IsFatMachO(file string) (bool, error) {
 	return magic == mhMagic || magic == mhCigam ||
 		magic == mhMagic64 || magic == mhCigam64 ||
 		magic == fatMagic || magic == fatCigam, nil
+}
+
+func FindFatMachOFiles(folder string) ([]string, error) {
+	var ret []string
+	walkFn := func(path string, info os.FileInfo, err error) error {
+		if (info.Mode() & os.ModeSymlink) != 0 {
+			LogWarn("Skipping over symlink: %s", path)
+			return nil
+		} else if info.IsDir() {
+			return nil
+		}
+
+		if isfm, err := IsFatMachO(path); err != nil {
+			LogWarn("Could not check %s: %s", path, err)
+		} else if isfm {
+			LogInfo("Found Fat/Mach-O: %s", path)
+			ret = append(ret, path)
+		}
+		return nil
+	}
+
+	err := filepath.Walk(folder, walkFn)
+	return ret, err
 }

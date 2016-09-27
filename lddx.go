@@ -18,6 +18,7 @@ type options struct {
 	JSON            bool     `short:"s" long:"json" description:"Dump dependencies in JSON format"`
 	ExecutablePath  string   `short:"e" long:"executable-path" description:"Executable path to use when resolving @executable_path dependencies"`
 	IgnoredPrefixes []string `short:"i" long:"ignore-prefix" description:"Specifies a library prefix to ignore when resolving dependencies"`
+	IgnoredFiles    []string `short:"x" long:"ignore-file" description:"Specifies a file (e.g. libz.dylib) to ignore when resolving dependencies (case sensitive)"`
 	NoDefaultIgnore bool     `short:"d" long:"no-default-ignore" description:"By default, libraries under /System and /usr/lib are ignored from dependency resolution. Specify this flag to not ignore these"`
 	Collect         string   `short:"c" long:"collect" description:"Collects dependencies into the specified folder"`
 	Overwrite       bool     `short:"w" long:"overwrite" description:"Ignore and overwrite existing libraries in the collection folder"`
@@ -37,6 +38,34 @@ func setIgnoredPrefixes(opts *options, depOpts *DependencyOptions) {
 	for prefix := range ignoredPrefixes {
 		depOpts.IgnoredPrefixes = append(depOpts.IgnoredPrefixes, prefix)
 	}
+}
+
+func expandFileList(files []string) []string {
+	var ret []string
+
+	for _, file := range files {
+		info, err := os.Stat(file)
+		if err != nil {
+			LogError("Cannot process %s: %s", file, err)
+			continue
+		}
+
+		if info.IsDir() {
+			if (info.Mode() & os.ModeSymlink) != 0 {
+				LogError("Cannot process symlinked folder: %s", file)
+				continue
+			}
+			sublist, err := FindFatMachOFiles(file)
+			if err != nil {
+				LogError("Cannot process %s: %s", file, err)
+				continue
+			}
+			ret = append(ret, sublist...)
+		} else {
+			ret = append(ret, file)
+		}
+	}
+	return ret
 }
 
 func main() {
@@ -68,8 +97,9 @@ func main() {
 	}
 
 	depOpts := DependencyOptions{
-		Recursive: opts.Recursive,
-		Jobs:      opts.Jobs,
+		Recursive:    opts.Recursive,
+		Jobs:         opts.Jobs,
+		IgnoredFiles: opts.IgnoredFiles,
 	}
 
 	if opts.ExecutablePath != "" {
@@ -82,7 +112,7 @@ func main() {
 	}
 
 	setIgnoredPrefixes(&opts, &depOpts)
-	graph, err := DepsRead(depOpts, args...)
+	graph, err := DepsRead(depOpts, expandFileList(args)...)
 	if err != nil {
 		LogError("Could not process dependencies: %s", err)
 		os.Exit(1)

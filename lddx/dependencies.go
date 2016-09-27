@@ -15,6 +15,7 @@ import (
 type DependencyOptions struct {
 	ExecutablePath  string
 	IgnoredPrefixes []string
+	IgnoredFiles    []string
 	Recursive       bool
 	Jobs            int
 }
@@ -104,6 +105,13 @@ func pruneDep(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions) 
 		}
 	}
 
+	for _, name := range opts.IgnoredFiles {
+		if dep.Name == name {
+			dep.Pruned = true
+			return true
+		}
+	}
+
 	for _, prefix := range opts.IgnoredPrefixes {
 		if strings.HasPrefix(path, prefix) {
 			dep.Pruned = true
@@ -139,17 +147,23 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 		return
 	}
 	// Run otool to figure out the deps
-	cmd := exec.Command("otool", "-L", path)
-	out, err := cmd.Output()
+	out, err := exec.Command("otool", "-L", path).Output()
 	if err != nil {
 		LogError("otool failed for %s: %s", dep.Path, err)
 		return
 	}
 
+	processedDeps := make(map[string]bool)
 	for _, val := range strings.Split(string(out), "\n") {
 		match := depRe.FindStringSubmatch(val)
 		if match != nil {
 			depPath := strings.TrimSpace(match[1])
+			if processedDeps[depPath] {
+				// Looks like otool doubled up an entry?
+				continue
+			}
+			processedDeps[depPath] = true
+
 			resolvedPath, err := resolvePath(depPath, dep, opts)
 			if err != nil {
 				LogError("Could not resolve dependency %s for %s: %s", depPath, dep.Path, err)
