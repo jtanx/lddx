@@ -322,3 +322,53 @@ func DepsPrettyPrint(dep *Dependency) {
 	}
 	printer(dep, 0)
 }
+
+// DepsGetJSONSerialisableVersion returns a dependency graph that's amenable to
+// serialisation. The graph emitted from DepsRead reuses pointers for subtrees
+// to save on computation time. However, on JSON serialisation, this causes subtrees
+// to potentially be repeated over and over again. This method ensures that in a
+// dependency graph, dependencies are only emitted once.
+func DepsGetJSONSerialisableVersion(graph *DependencyGraph) *DependencyGraph {
+	seenDeps := make(map[string]bool)
+	ret := &DependencyGraph{
+		TopDeps:  make([]*Dependency, 0, len(graph.TopDeps)),
+		FlatDeps: make(map[string]*Dependency),
+	}
+
+	var chopDep func(dep *Dependency) *Dependency
+	chopDep = func(dep *Dependency) *Dependency {
+		subDeps := make([]*Dependency, 0, len(dep.Deps))
+		changed := false
+		for _, subDep := range dep.Deps {
+			realPath := GetRealPath(subDep)
+			if !subDep.Pruned && !subDep.NotResolved && seenDeps[realPath] {
+				changed = true
+				patchedDep := *subDep
+				patchedDep.Deps = nil
+				patchedDep.PrunedByFlatDeps = true
+				subDeps = append(subDeps, &patchedDep)
+			} else {
+				seenDeps[realPath] = true
+				patchedDep := chopDep(subDep)
+				changed = changed || patchedDep != subDep
+				subDeps = append(subDeps, patchedDep)
+			}
+		}
+		if changed {
+			patchedDep := *dep
+			patchedDep.Deps = subDeps
+			return &patchedDep
+		}
+		return dep
+	}
+
+	for _, topDep := range graph.TopDeps {
+		ret.TopDeps = append(ret.TopDeps, chopDep(topDep))
+	}
+
+	for k, v := range graph.FlatDeps {
+		ret.FlatDeps[k] = chopDep(v)
+	}
+
+	return ret
+}

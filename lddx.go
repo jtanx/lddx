@@ -122,7 +122,7 @@ func main() {
 	}
 
 	if opts.JSON {
-		if out, err := json.MarshalIndent(graph, "", "\t"); err != nil {
+		if out, err := json.MarshalIndent(DepsGetJSONSerialisableVersion(graph), "", "\t"); err != nil {
 			LogError("Could not serialise as JSON: %s", err)
 		} else {
 			fmt.Println(string(out))
