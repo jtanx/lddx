@@ -24,15 +24,16 @@ type CollectorOptions struct {
 func getNiceness(ent1, ent2 string, order []string) (int, int) {
 	nice1, nice2 := -1, -1
 
-	for i, ent := range order {
-		if nice1 < 0 && strings.HasPrefix(ent1, ent) {
+	for i := 0; (i < len(order)) && (nice1 < 0 || nice2 < 0); i++ {
+		if nice1 < 0 && strings.HasPrefix(ent1, order[i]) {
 			nice1 = i
 		}
 
-		if nice2 < 0 && strings.HasPrefix(ent2, ent) {
+		if nice2 < 0 && strings.HasPrefix(ent2, order[i]) {
 			nice2 = i
 		}
 	}
+
 	return nice1, nice2
 }
 
