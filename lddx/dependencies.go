@@ -27,7 +27,6 @@ type Dependency struct {
 	Path             string
 	RealPath         *string `json:",omitempty"`
 	Info             string
-	Parent           *Dependency `json:"-"`
 	Pruned           bool
 	PrunedByFlatDeps bool
 	NotResolved      bool
@@ -93,51 +92,48 @@ func resolvePath(path string, dep *Dependency, opts *DependencyOptions) (string,
 
 // pruneDep checks against the dependency graph to see if the current
 // dependency meets pruning criteria, and if so, prunes the given dependency.
-func pruneDep(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions) bool {
+func pruneDep(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions) *Dependency {
 	path := GetRealPath(dep)
 	// The toplevel dependencies may not be in FlatDeps.
 	// Check for a circular dependency here.
 	for _, topDep := range graph.TopDeps {
 		if topDep.Path == path {
 			dep.Pruned = true
-			return true
+			return dep
 		}
 	}
 
 	for _, name := range opts.IgnoredFiles {
 		if dep.Name == name {
 			dep.Pruned = true
-			return true
+			return dep
 		}
 	}
 
 	for _, prefix := range opts.IgnoredPrefixes {
 		if strings.HasPrefix(path, prefix) {
 			dep.Pruned = true
-			return true
+			return dep
 		}
 	}
 
 	graph.fdLock.Lock()
 	defer graph.fdLock.Unlock()
 
-	if _, processed := graph.FlatDeps[path]; !processed {
+	if existingDep, processed := graph.FlatDeps[path]; !processed {
 		graph.FlatDeps[path] = dep
-		return false
+		return dep
+	} else {
+		// The pruned property still needs to be set.
+		dep.Pruned = true
+		dep.PrunedByFlatDeps = true
+		return existingDep
 	}
-	dep.Pruned = true
-	dep.PrunedByFlatDeps = true
-	return true
 }
 
 func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, limiter chan int, wg *sync.WaitGroup) {
 	if wg != nil {
 		defer wg.Done()
-	}
-
-	if limiter != nil {
-		<-limiter
-		defer func() { limiter <- 1 }()
 	}
 
 	path := GetRealPath(dep)
@@ -146,15 +142,26 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 		// the real path to this dependency.
 		return
 	}
+
+	if limiter != nil {
+		<-limiter
+	}
+
 	// Run otool to figure out the deps
 	out, err := exec.Command("otool", "-l", path).Output()
+
+	if limiter != nil {
+		limiter <- 1
+	}
+
 	if err != nil {
 		LogError("otool failed for %s: %s", dep.Path, err)
 		dep.NotResolved = true
 		return
 	}
 
-	processedDeps := make(map[string]bool)
+	var depsToProcess []*Dependency
+	observedDeps := make(map[string]bool)
 	output := strings.Split(string(out), "\n")
 	for i := 0; i < len(output); i++ {
 		line := strings.TrimSpace(output[i])
@@ -169,8 +176,7 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 
 		match := depRe.FindStringSubmatch(output[i+2])
 		if match == nil {
-			LogWarn("Unexpected otool output at line %d: %s", i+1, output[i+2])
-			i += 5
+			LogWarn("Malformed output from otool at line %d: %s", i+1, output[i+2])
 			continue
 		}
 
@@ -182,40 +188,40 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 			resolvedPath = depPath
 		}
 
-		if processedDeps[resolvedPath] {
-			// Looks like otool doubled up an entry?
-			continue
-		}
-		processedDeps[resolvedPath] = true
+		// Only process any dep once.
+		// I don't know why, but otool can double up dependencies.
+		if !observedDeps[resolvedPath] {
+			observedDeps[resolvedPath] = true
+			subDep := &Dependency{
+				Name:        filepath.Base(depPath),
+				Path:        depPath,
+				Info:        strings.TrimSpace(output[i+5]) + ", " + strings.TrimSpace(output[i+4]),
+				NotResolved: err != nil,
+				IsWeakDep:   isWeakDep,
+			}
+			if depPath != resolvedPath {
+				subDep.RealPath = &resolvedPath
+			}
+			dep.Deps = append(dep.Deps, pruneDep(subDep, graph, opts))
 
-		subDep := &Dependency{
-			Name:        filepath.Base(depPath),
-			Path:        depPath,
-			Info:        strings.TrimSpace(output[i+5]) + ", " + strings.TrimSpace(output[i+4]),
-			NotResolved: err != nil,
-			IsWeakDep:   isWeakDep,
-			Parent:      dep,
+			if !subDep.Pruned && !subDep.NotResolved {
+				depsToProcess = append(depsToProcess, subDep)
+			}
+		} else {
+			LogWarn("OTOOL IS BEING SHIT")
 		}
-		if depPath != resolvedPath {
-			subDep.RealPath = &resolvedPath
-		}
-		pruneDep(subDep, graph, opts)
-		dep.Deps = append(dep.Deps, subDep)
-
 		i += 5
 	}
 
 	sort.Sort(ByPath(dep.Deps))
 
 	if opts.Recursive {
-		for _, subDep := range dep.Deps {
-			if !subDep.Pruned && !subDep.NotResolved {
-				if wg == nil {
-					depsRead(subDep, graph, opts, limiter, wg)
-				} else {
-					wg.Add(1)
-					go depsRead(subDep, graph, opts, limiter, wg)
-				}
+		for _, subDep := range depsToProcess {
+			if wg == nil {
+				depsRead(subDep, graph, opts, limiter, wg)
+			} else {
+				wg.Add(1)
+				go depsRead(subDep, graph, opts, limiter, wg)
 			}
 		}
 	}
@@ -293,6 +299,7 @@ func DepsCheckOToolVersion() (string, error) {
 // DepsPrettyPrint prints a dependency graph in a format similar
 // to the output from ldd.
 func DepsPrettyPrint(dep *Dependency) {
+	hasPrinted := make(map[string]bool)
 	var printer func(dep *Dependency, depth int)
 	printer = func(dep *Dependency, depth int) {
 		if dep == nil || dep.Deps == nil {
@@ -300,8 +307,17 @@ func DepsPrettyPrint(dep *Dependency) {
 		}
 
 		for _, subDep := range dep.Deps {
-			fmt.Printf("%s%s => %s\n", strings.Repeat(" ", 4+2*depth), subDep.Name, subDep.Path)
-			printer(subDep, depth+1)
+			realPath := GetRealPath(subDep)
+			if &subDep.Path != &realPath {
+				fmt.Printf("%s%s => %s (%s)\n", strings.Repeat(" ", 4+2*depth), subDep.Name, subDep.Path, realPath)
+			} else {
+				fmt.Printf("%s%s => %s\n", strings.Repeat(" ", 4+2*depth), subDep.Name, subDep.Path)
+			}
+
+			if !hasPrinted[realPath] {
+				hasPrinted[realPath] = true
+				printer(subDep, depth+1)
+			}
 		}
 	}
 	printer(dep, 0)

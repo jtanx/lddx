@@ -14,7 +14,7 @@ type options struct {
 	Quiet              bool     `short:"q" long:"quiet" description:"Less verbose output"`
 	Version            bool     `short:"v" long:"version" description:"Prints the version of lddx"`
 	Recursive          bool     `short:"r" long:"recursive" description:"Recursively find dependencies"`
-	Jobs               int      `short:"j" long:"jobs" default:"10" description:"Number of files to process concurrently. Specify specify 1 for reproducible results"`
+	Jobs               int      `short:"j" long:"jobs" default:"10" description:"Number of files to process concurrently."`
 	JSON               bool     `short:"s" long:"json" description:"Dump dependencies in JSON format"`
 	ExecutablePath     string   `short:"e" long:"executable-path" description:"Executable path to use when resolving @executable_path dependencies"`
 	IgnoredPrefixes    []string `short:"i" long:"ignore-prefix" description:"Specifies a library prefix to ignore when resolving dependencies"`
