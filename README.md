@@ -4,7 +4,7 @@ This is a dynamic dependency lister for OS X/macOS that can:
 * Output in a format similar to ldd
 * Output in JSON format
 
-Similar to dylibbundler, it makes use of `otool` (part of the Command Line Tools) to work. Furthermore, similar to dylibbundler, it can optionally collect and fix all dependencies required for a given binary. However, unlike dylibbundler:
+Similar to dylibbundler, it can optionally collect and fix all dependencies required for a given binary. However, unlike dylibbundler:
 
 * It is highly configurable
     * The ignore paths can be altered (defaults to `/usr/lib` and `/System`
@@ -17,6 +17,8 @@ Similar to dylibbundler, it makes use of `otool` (part of the Command Line Tools
 * It can fix multiple files at once, even if said files are in different folders (the relative path the fixed libraries is automatically calculated)
 * If a dependent library already exists in the output folder, its collection can be skipped and binaries be fixed to point to it
 * It can recursively scan a folder for files to process
+* The dependency calculator is cross-platform
+    * Instead of `otool`, lddx uses the built-in Fat/Mach-O parser that comes with Go. This means that technically, the parser can work on any platform that Go supports, including Linux and Windows. Its usefulness is limited by the fact that for recursive dependencies to be solved, it must either be on the same Mac file system, or all its dependencies must be relative.
 
 ## Getting lddx
 If you have Go installed, just run
