@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	//"runtime/pprof"
+	"runtime"
+	"runtime/pprof"
 
 	"github.com/jessevdk/go-flags"
 	. "github.com/jtanx/lddx/lddx"
@@ -27,6 +28,9 @@ type options struct {
 	Overwrite          bool     `short:"w" long:"overwrite" description:"Ignore and overwrite existing libraries in the collection folder"`
 	ModifySpecialPaths bool     `short:"m" long:"modify-special-paths" description:"Collect and modify special paths (e.g. @executable_path/@loader_path) when collecting dependencies"`
 	CollectFrameworks  bool     `short:"f" long:"collect-frameworks" descrption:"Include Framework libraries in the collection"`
+
+	CpuProfile string `long:"cpu-profile" description:"Run CPU profiling (e.g. --cpu-profile=cpuprofile.pprof)"`
+	MemProfile string `long:"mem-profile" description:"Run memory profiling (e.g. --mem-profile=memprofile.pprof)"`
 }
 
 func setIgnoredPrefixes(opts *options, depOpts *DependencyOptions) {
@@ -94,9 +98,15 @@ func main() {
 		os.Exit(0)
 	}
 
-	//f, err := os.Create("test.pprof")
-	//pprof.StartCPUProfile(f)
-	//defer pprof.StopCPUProfile()
+	if opts.CpuProfile != "" {
+		if fp, err := os.Create(opts.CpuProfile); err != nil {
+			LogError("Could not create CPU profile: %s", err)
+			os.Exit(1)
+		} else {
+			pprof.StartCPUProfile(fp)
+			defer pprof.StopCPUProfile()
+		}
+	}
 
 	LogInit(opts.NoColor, opts.Quiet)
 
@@ -157,4 +167,17 @@ func main() {
 		}
 	}
 
+	if opts.MemProfile != "" {
+		if fp, err := os.Create(opts.MemProfile); err != nil {
+			LogError("Could not create memory profile: %s", err)
+			os.Exit(1)
+		} else {
+			defer fp.Close()
+			runtime.GC()
+			if err := pprof.WriteHeapProfile(fp); err != nil {
+				LogError("Could not make memory profile: %s", err)
+				os.Exit(1)
+			}
+		}
+	}
 }

@@ -170,9 +170,11 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 		if !observedDeps[resolvedPath] {
 			observedDeps[resolvedPath] = true
 			subDep := &Dependency{
-				Name:        filepath.Base(lib.Path),
-				Path:        lib.Path,
-				Info:        "UNKNOWN", //strings.TrimSpace(output[i+5]) + ", " + strings.TrimSpace(output[i+4]),
+				Name: filepath.Base(lib.Path),
+				Path: lib.Path,
+				Info: fmt.Sprintf("compatibility version %d.%d.%d, current version %d.%d.%d",
+					lib.CompatVersion>>16, (lib.CompatVersion>>8)&0xff, lib.CompatVersion&0xff,
+					lib.CurrentVersion>>16, (lib.CurrentVersion>>8)&0xff, lib.CurrentVersion&0xff),
 				NotResolved: err != nil,
 				IsWeakDep:   lib.Weak,
 			}
