@@ -64,7 +64,7 @@ func collectorWorker(jobs <-chan *Dependency, wg *sync.WaitGroup, opts *Collecto
 			if err != nil {
 				LogError("Could not update identity: %s [%s]", err, out)
 			}
-			for _, subDep := range dep.Deps {
+			for _, subDep := range *dep.Deps {
 				if subDep.NotResolved || (subDep.Pruned && !subDep.PrunedByFlatDeps) {
 					continue
 				} else if !opts.CollectFrameworks && isFrameworkLib(subDep.Name) {
@@ -163,15 +163,15 @@ func FixupToplevels(graph *DependencyGraph, opts *CollectorOptions) error {
 		if ent.NotResolved {
 			LogWarn("Not fixing unresolved toplevel %s", ent.Path)
 			continue
-		} else if info, err := os.Stat(GetRealPath(ent)); err != nil {
+		} else if info, err := os.Stat(ent.RealPath); err != nil {
 			LogWarn("Cannot stat %s, skipping", ent.Path)
 			continue
-		} else if err := os.Chmod(GetRealPath(ent), info.Mode()|0700); err != nil {
+		} else if err := os.Chmod(ent.RealPath, info.Mode()|0700); err != nil {
 			LogWarn("Cannot make %s writeable, skipping", ent.Path)
 			continue
 		}
 
-		for _, subDep := range ent.Deps {
+		for _, subDep := range *ent.Deps {
 			if subDep.NotResolved || (subDep.Pruned && !subDep.PrunedByFlatDeps) {
 				continue
 			} else if !opts.CollectFrameworks && isFrameworkLib(subDep.Name) {
@@ -180,12 +180,12 @@ func FixupToplevels(graph *DependencyGraph, opts *CollectorOptions) error {
 				continue
 			}
 
-			rel, err := filepath.Rel(filepath.Dir(GetRealPath(ent)), filepath.Join(opts.Folder, subDep.Name))
+			rel, err := filepath.Rel(filepath.Dir(ent.RealPath), filepath.Join(opts.Folder, subDep.Name))
 			if err != nil {
-				LogWarn("Could not determine relative path to dep %s: %s", GetRealPath(ent), err)
+				LogWarn("Could not determine relative path to dep %s: %s", ent.RealPath, err)
 				continue
 			}
-			out, err := exec.Command("install_name_tool", "-change", subDep.Path, "@loader_path/"+rel, GetRealPath(ent)).CombinedOutput()
+			out, err := exec.Command("install_name_tool", "-change", subDep.Path, "@loader_path/"+rel, ent.RealPath).CombinedOutput()
 			if err != nil {
 				LogError("Could not rewrite dep path: %s [%s]", err, out)
 			}

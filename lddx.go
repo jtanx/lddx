@@ -22,6 +22,7 @@ type options struct {
 	IgnoredFiles    []string `short:"x" long:"ignore-file" description:"Specifies a file (e.g. libz.dylib) to ignore when resolving dependencies (case sensitive)"`
 	NoDefaultIgnore bool     `short:"d" long:"no-default-ignore" description:"By default, libraries under /System and /usr/lib are ignored from dependency resolution. Specify this flag to not ignore these"`
 	ExecutablePath  string   `short:"e" long:"executable-path" description:"Executable path to use when resolving @executable_path dependencies"`
+	SkipWeakLibs    bool     `long:"skip-weak" description:"Skip handling weakly loaded libs"`
 
 	Collect            string   `short:"c" long:"collect" description:"Collects dependencies into the specified folder"`
 	CollectOrder       []string `short:"l" long:"collect-order" description:"Specifies a prefix to prefer when resolving conflicts in library collection"`
@@ -60,10 +61,6 @@ func expandFileList(files []string) []string {
 		}
 
 		if info.IsDir() {
-			if (info.Mode() & os.ModeSymlink) != 0 {
-				LogError("Cannot process symlinked folder: %s", file)
-				continue
-			}
 			sublist, err := FindFatMachOFiles(file)
 			if err != nil {
 				LogError("Cannot process %s: %s", file, err)
@@ -111,22 +108,15 @@ func main() {
 	LogInit(opts.NoColor, opts.Quiet)
 
 	depOpts := DependencyOptions{
-		Recursive:    opts.Recursive,
-		Jobs:         opts.Jobs,
-		IgnoredFiles: opts.IgnoredFiles,
-		// Executable path and ignored prefixes set below.
+		Recursive:      opts.Recursive,
+		Jobs:           opts.Jobs,
+		IgnoredFiles:   opts.IgnoredFiles,
+		SkipWeakLibs:   opts.SkipWeakLibs,
+		ExecutablePath: opts.ExecutablePath,
+		// Ignored prefixes set below.
 	}
-
-	if opts.ExecutablePath != "" {
-		path, err := ResolveAbsPath(opts.ExecutablePath)
-		if err != nil {
-			LogError("Could not resolve executable path: %s", err)
-			os.Exit(1)
-		}
-		depOpts.ExecutablePath = path
-	}
-
 	setIgnoredPrefixes(&opts, &depOpts)
+
 	graph, err := DepsRead(depOpts, expandFileList(args)...)
 	if err != nil {
 		LogError("Could not process dependencies: %s", err)

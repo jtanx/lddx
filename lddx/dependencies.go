@@ -15,21 +15,22 @@ type DependencyOptions struct {
 	IgnoredPrefixes []string
 	IgnoredFiles    []string
 	Recursive       bool
+	SkipWeakLibs    bool
 	Jobs            int
 }
 
 // Dependency contains information about a file and any
 // dependencies that it has.
 type Dependency struct {
-	Name             string
-	Path             string
-	RealPath         *string `json:",omitempty"`
-	Info             string
-	Pruned           bool
-	PrunedByFlatDeps bool
-	NotResolved      bool
-	IsWeakDep        bool
-	Deps             []*Dependency
+	Name             string         // The name of the library
+	Path             string         // The path to the library, as specified by the load command
+	RealPath         string         // The real path to the library, if available (or same as Path)
+	Info             string         // Compatibility and current version info
+	Pruned           bool           // Indicates if checking the dependencies of this library were skipped
+	PrunedByFlatDeps bool           // Indicates if the libs were removed because they were listed in another subtree (for JSON serialisation only)
+	NotResolved      bool           // Indicates if the dependencies could not be resolved (could not determine dependencies)
+	IsWeakDep        bool           // Indicates if this dependency is from a weak load command
+	Deps             *[]*Dependency // List of dependencies that this dependency depends on. Ugh we need these pointers because multiple Dependencies can share this.
 }
 
 // ByPath sorts a Dependency slice by the Path field
@@ -62,13 +63,6 @@ func IsSpecialPath(path string) bool {
 	return strings.HasPrefix(path, "@")
 }
 
-func GetRealPath(dep *Dependency) string {
-	if dep.RealPath != nil {
-		return *dep.RealPath
-	}
-	return dep.Path
-}
-
 func resolvePath(path string, dep *Dependency, opts *DependencyOptions) (string, error) {
 	if IsSpecialPath(path) {
 		if strings.HasPrefix(path, "@executable_path/") {
@@ -77,7 +71,7 @@ func resolvePath(path string, dep *Dependency, opts *DependencyOptions) (string,
 			}
 			path = opts.ExecutablePath + path[len("@executable_path"):]
 		} else if strings.HasPrefix(path, "@loader_path/") {
-			path = filepath.Dir(GetRealPath(dep)) + path[len("@loader_path"):]
+			path = filepath.Dir(dep.RealPath) + path[len("@loader_path"):]
 		} else {
 			return path, fmt.Errorf("%s: Unsupported", path)
 		}
@@ -86,44 +80,83 @@ func resolvePath(path string, dep *Dependency, opts *DependencyOptions) (string,
 	return ResolveAbsPath(path)
 }
 
+func matchesIgnoredPrefixes(path string, opts *DependencyOptions) bool {
+	for _, prefix := range opts.IgnoredPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // pruneDep checks against the dependency graph to see if the current
 // dependency meets pruning criteria, and if so, prunes the given dependency.
-func pruneDep(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions) *Dependency {
-	path := GetRealPath(dep)
+func pruneDep(lib *Dylib, parent *Dependency, graph *DependencyGraph, opts *DependencyOptions) (*Dependency, bool) {
+	ret := &Dependency{
+		Name:     filepath.Base(lib.Path),
+		Path:     lib.Path,
+		RealPath: lib.Path,
+		Info: fmt.Sprintf("compatibility version %d.%d.%d, current version %d.%d.%d",
+			lib.CompatVersion>>16, (lib.CompatVersion>>8)&0xff, lib.CompatVersion&0xff,
+			lib.CurrentVersion>>16, (lib.CurrentVersion>>8)&0xff, lib.CurrentVersion&0xff),
+		IsWeakDep: lib.Weak,
+	}
+
+	// Check if we skip weak libs
+	if lib.Weak && opts.SkipWeakLibs {
+		ret.Pruned = true
+		return ret, true
+	}
+
+	// Check if it matches an ignored file.
+	for _, name := range opts.IgnoredFiles {
+		if ret.Name == name {
+			ret.Pruned = true
+			return ret, true
+		}
+	}
+
 	// The toplevel dependencies may not be in FlatDeps.
 	// Check for a circular dependency here.
 	for _, topDep := range graph.TopDeps {
-		if topDep.Path == path {
-			dep.Pruned = true
-			return dep
+		if topDep.Path == ret.Path || topDep.RealPath == ret.RealPath {
+			// Todo: Set pruned or not???
+			ret.Pruned = true
+			return ret, true
 		}
 	}
 
-	for _, name := range opts.IgnoredFiles {
-		if dep.Name == name {
-			dep.Pruned = true
-			return dep
-		}
+	// We now need to get the real path to the file.
+	realPath, err := resolvePath(lib.Path, parent, opts)
+	if err != nil {
+		LogWarn("Could not resolve dependency %s for %s: %s (weak: %v)",
+			lib.Path, parent.Path, err, lib.Weak)
+		ret.NotResolved = true
+		return ret, true
+	} else if realPath != lib.Path {
+		ret.RealPath = realPath
 	}
 
-	for _, prefix := range opts.IgnoredPrefixes {
-		if strings.HasPrefix(path, prefix) {
-			dep.Pruned = true
-			return dep
-		}
+	// Check if the path matches an ignored prefix.
+	if matchesIgnoredPrefixes(ret.Path, opts) || (ret.Path != ret.RealPath && matchesIgnoredPrefixes(ret.RealPath, opts)) {
+		ret.Pruned = true
+		return ret, true
 	}
 
+	// Now we need to check if the dep has already been processed or not.
 	graph.fdLock.Lock()
 	defer graph.fdLock.Unlock()
 
-	if existingDep, processed := graph.FlatDeps[path]; !processed {
-		graph.FlatDeps[path] = dep
-		return dep
+	if existingDep, processed := graph.FlatDeps[ret.RealPath]; !processed {
+		graph.FlatDeps[ret.RealPath] = ret
+		ret.Deps = new([]*Dependency)
+		return ret, false
 	} else {
-		// The pruned property still needs to be set.
-		dep.Pruned = true
-		dep.PrunedByFlatDeps = true
-		return existingDep
+		if existingDep.Path != ret.Path {
+			ret.Deps = existingDep.Deps
+			return ret, true
+		}
+		return existingDep, true
 	}
 }
 
@@ -132,25 +165,9 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 		defer wg.Done()
 	}
 
-	path := GetRealPath(dep)
-	if IsSpecialPath(path) {
-		// We cannot process this dependency any further if we don't have
-		// the real path to this dependency.
-		return
-	}
-
-	if limiter != nil {
-		<-limiter
-	}
-
-	libs, err := ReadDylibs(path)
-
-	if limiter != nil {
-		limiter <- 1
-	}
-
+	libs, err := ReadDylibs(dep.RealPath, limiter)
 	if err != nil {
-		LogError("Could not get libs for %s: %s", dep.Path, err)
+		LogError("Could not get libs for %s [%s]: %s", dep.Path, dep.RealPath, err)
 		dep.NotResolved = true
 		return
 	}
@@ -158,38 +175,21 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 	var depsToProcess []*Dependency
 	observedDeps := make(map[string]bool)
 	for _, lib := range libs {
-		resolvedPath, err := resolvePath(lib.Path, dep, opts)
-		if err != nil {
-			LogWarn("Could not resolve dependency %s for %s: %s (weak: %v)",
-				lib.Path, dep.Path, err, lib.Weak)
-			resolvedPath = lib.Path
-		}
-
 		// Only process any dep once.
 		// A dep can be seen twice if it is a fat library (contains multiple aches)
-		if !observedDeps[resolvedPath] {
-			observedDeps[resolvedPath] = true
-			subDep := &Dependency{
-				Name: filepath.Base(lib.Path),
-				Path: lib.Path,
-				Info: fmt.Sprintf("compatibility version %d.%d.%d, current version %d.%d.%d",
-					lib.CompatVersion>>16, (lib.CompatVersion>>8)&0xff, lib.CompatVersion&0xff,
-					lib.CurrentVersion>>16, (lib.CurrentVersion>>8)&0xff, lib.CurrentVersion&0xff),
-				NotResolved: err != nil,
-				IsWeakDep:   lib.Weak,
-			}
-			if lib.Path != resolvedPath {
-				subDep.RealPath = &resolvedPath
-			}
-			dep.Deps = append(dep.Deps, pruneDep(subDep, graph, opts))
+		if observedDeps[lib.Path] {
+			continue
+		}
+		observedDeps[lib.Path] = true
 
-			if !subDep.Pruned && !subDep.NotResolved {
-				depsToProcess = append(depsToProcess, subDep)
-			}
+		subDep, pruned := pruneDep(&lib, dep, graph, opts)
+		*dep.Deps = append(*dep.Deps, subDep)
+		if !pruned {
+			depsToProcess = append(depsToProcess, subDep)
 		}
 	}
 
-	sort.Sort(ByPath(dep.Deps))
+	sort.Sort(ByPath(*dep.Deps))
 
 	if opts.Recursive {
 		for _, subDep := range depsToProcess {
@@ -206,28 +206,32 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 // DepsRead calculates the dependency graph for the list of files provided.
 func DepsRead(opts DependencyOptions, files ...string) (*DependencyGraph, error) {
 	var deps []*Dependency
-	absFiles := make(map[string]bool)
+	seenFiles := make(map[string]bool)
 
 	// Reduce the file list to make it unique by the absolute path
 	for _, file := range files {
-		file, err := ResolveAbsPath(file)
+		absPath, err := ResolveAbsPath(file)
 
 		if err != nil {
 			return nil, err
-		} else if isfm, err := IsFatMachO(file); err != nil || !isfm {
-			if err != nil {
-				return nil, err
-			}
+		} else if isfm, err := IsFatMachO(file); err != nil {
+			return nil, err
+		} else if !isfm {
 			return nil, fmt.Errorf("%s: Not a Mach-O/Universal binary", file)
 		}
 
-		if !absFiles[file] {
+		if !seenFiles[file] {
 			dep := &Dependency{
-				Name: filepath.Base(file),
-				Path: file,
+				Name:     filepath.Base(file),
+				Path:     file,
+				RealPath: file,
+				Deps:     new([]*Dependency),
+			}
+			if absPath != file {
+				dep.RealPath = absPath
 			}
 			deps = append(deps, dep)
-			absFiles[file] = true
+			seenFiles[file] = true
 		}
 	}
 
@@ -271,16 +275,15 @@ func DepsPrettyPrint(dep *Dependency) {
 			return
 		}
 
-		for _, subDep := range dep.Deps {
-			realPath := GetRealPath(subDep)
-			if &subDep.Path != &realPath {
-				fmt.Printf("%s%s => %s (%s)\n", strings.Repeat(" ", 4+2*depth), subDep.Name, subDep.Path, realPath)
+		for _, subDep := range *dep.Deps {
+			if subDep.Path != subDep.RealPath {
+				fmt.Printf("%s%s => %s (%s)\n", strings.Repeat(" ", 4+2*depth), subDep.Name, subDep.Path, subDep.RealPath)
 			} else {
 				fmt.Printf("%s%s => %s\n", strings.Repeat(" ", 4+2*depth), subDep.Name, subDep.Path)
 			}
 
-			if !hasPrinted[realPath] {
-				hasPrinted[realPath] = true
+			if !hasPrinted[subDep.RealPath] {
+				hasPrinted[subDep.RealPath] = true
 				printer(subDep, depth+1)
 			}
 		}
@@ -302,18 +305,21 @@ func DepsGetJSONSerialisableVersion(graph *DependencyGraph) *DependencyGraph {
 
 	var chopDep func(dep *Dependency) *Dependency
 	chopDep = func(dep *Dependency) *Dependency {
-		subDeps := make([]*Dependency, 0, len(dep.Deps))
+		if dep.Deps == nil {
+			return dep
+		}
+
+		subDeps := make([]*Dependency, 0, len(*dep.Deps))
 		changed := false
-		for _, subDep := range dep.Deps {
-			realPath := GetRealPath(subDep)
-			if !subDep.Pruned && !subDep.NotResolved && seenDeps[realPath] {
+		for _, subDep := range *dep.Deps {
+			if !subDep.Pruned && !subDep.NotResolved && seenDeps[subDep.RealPath] {
 				changed = true
 				patchedDep := *subDep
 				patchedDep.Deps = nil
 				patchedDep.PrunedByFlatDeps = true
 				subDeps = append(subDeps, &patchedDep)
 			} else {
-				seenDeps[realPath] = true
+				seenDeps[subDep.RealPath] = true
 				patchedDep := chopDep(subDep)
 				changed = changed || patchedDep != subDep
 				subDeps = append(subDeps, patchedDep)
@@ -321,7 +327,7 @@ func DepsGetJSONSerialisableVersion(graph *DependencyGraph) *DependencyGraph {
 		}
 		if changed {
 			patchedDep := *dep
-			patchedDep.Deps = subDeps
+			patchedDep.Deps = &subDeps
 			return &patchedDep
 		}
 		return dep

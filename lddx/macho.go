@@ -67,8 +67,13 @@ func FindFatMachOFiles(folder string) ([]string, error) {
 	var ret []string
 	walkFn := func(path string, info os.FileInfo, err error) error {
 		if (info.Mode() & os.ModeSymlink) != 0 {
-			LogWarn("Skipping over symlink: %s", path)
-			return nil
+			if stat, err := os.Stat(path); err != nil {
+				LogWarn("Could not check symlink %s: %s", path, err)
+				return nil
+			} else if stat.IsDir() {
+				LogNote("Skipping over symlink'ed dir: %s", path)
+				return nil
+			}
 		} else if info.IsDir() {
 			return nil
 		}
@@ -121,8 +126,13 @@ func TryParseLoadCmdWeakLib(data []byte, byteOrder binary.ByteOrder) (*Dylib, er
 // ReadDylibs returns the list of dynamic libraries referenced by a file.
 // The file may either be a fat file or a normal Mach-O file.
 // This method will search for both normal libs and weakly loaded libs.
-func ReadDylibs(file string) ([]Dylib, error) {
+func ReadDylibs(file string, limiter chan int) ([]Dylib, error) {
 	var libs []*macho.File
+
+	if limiter != nil {
+		<-limiter
+		defer func() { limiter <- 1 }()
+	}
 
 	if fp, err := macho.Open(file); err != nil {
 		if fat, err := macho.OpenFat(file); err != nil {
