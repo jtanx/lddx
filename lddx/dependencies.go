@@ -2,9 +2,7 @@ package lddx
 
 import (
 	"fmt"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -59,8 +57,6 @@ type DependencyGraph struct {
 	FlatDeps map[string]*Dependency // Contains all unique, non-pruned referenced dependencies
 	fdLock   sync.RWMutex           // Used to control concurrent access to FlatDeps
 }
-
-var depRe = regexp.MustCompile(`\s*name (.*) \(offset.*\)$`)
 
 func IsSpecialPath(path string) bool {
 	return strings.HasPrefix(path, "@")
@@ -147,59 +143,40 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 		<-limiter
 	}
 
-	// Run otool to figure out the deps
-	out, err := exec.Command("otool", "-l", path).Output()
+	libs, err := ReadDylibs(path)
 
 	if limiter != nil {
 		limiter <- 1
 	}
 
 	if err != nil {
-		LogError("otool failed for %s: %s", dep.Path, err)
+		LogError("Could not get libs for %s: %s", dep.Path, err)
 		dep.NotResolved = true
 		return
 	}
 
 	var depsToProcess []*Dependency
 	observedDeps := make(map[string]bool)
-	output := strings.Split(string(out), "\n")
-	for i := 0; i < len(output); i++ {
-		line := strings.TrimSpace(output[i])
-		isWeakDep := (line == "cmd LC_LOAD_WEAK_DYLIB")
-
-		if !isWeakDep && line != "cmd LC_LOAD_DYLIB" {
-			continue
-		} else if i+5 >= len(output) {
-			LogWarn("Malformed output from otool at line %d: %s", i+1, line)
-			break
-		}
-
-		match := depRe.FindStringSubmatch(output[i+2])
-		if match == nil {
-			LogWarn("Malformed output from otool at line %d: %s", i+1, output[i+2])
-			continue
-		}
-
-		depPath := strings.TrimSpace(match[1])
-		resolvedPath, err := resolvePath(depPath, dep, opts)
+	for _, lib := range libs {
+		resolvedPath, err := resolvePath(lib.Path, dep, opts)
 		if err != nil {
 			LogWarn("Could not resolve dependency %s for %s: %s (weak: %v)",
-				depPath, dep.Path, err, isWeakDep)
-			resolvedPath = depPath
+				lib.Path, dep.Path, err, lib.WeakLoad)
+			resolvedPath = lib.Path
 		}
 
 		// Only process any dep once.
-		// I don't know why, but otool can double up dependencies.
+		// A dep can be seen twice if it is a fat library (contains multiple aches)
 		if !observedDeps[resolvedPath] {
 			observedDeps[resolvedPath] = true
 			subDep := &Dependency{
-				Name:        filepath.Base(depPath),
-				Path:        depPath,
-				Info:        strings.TrimSpace(output[i+5]) + ", " + strings.TrimSpace(output[i+4]),
+				Name:        filepath.Base(lib.Path),
+				Path:        lib.Path,
+				Info:        "UNKNOWN", //strings.TrimSpace(output[i+5]) + ", " + strings.TrimSpace(output[i+4]),
 				NotResolved: err != nil,
-				IsWeakDep:   isWeakDep,
+				IsWeakDep:   lib.WeakLoad,
 			}
-			if depPath != resolvedPath {
+			if lib.Path != resolvedPath {
 				subDep.RealPath = &resolvedPath
 			}
 			dep.Deps = append(dep.Deps, pruneDep(subDep, graph, opts))
@@ -207,10 +184,7 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 			if !subDep.Pruned && !subDep.NotResolved {
 				depsToProcess = append(depsToProcess, subDep)
 			}
-		} else {
-			LogWarn("OTOOL IS BEING SHIT")
 		}
-		i += 5
 	}
 
 	sort.Sort(ByPath(dep.Deps))
@@ -283,17 +257,6 @@ func DepsRead(opts DependencyOptions, files ...string) (*DependencyGraph, error)
 	}
 
 	return graph, nil
-}
-
-// DepsCheckOToolVersion obtains the output from otool --version,
-// or an error if such output could not be obtained.
-func DepsCheckOToolVersion() (string, error) {
-	cmd := exec.Command("otool", "--version")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("%s [%s]", err, strings.TrimSpace(string(out)))
-	}
-	return string(out), nil
 }
 
 // DepsPrettyPrint prints a dependency graph in a format similar

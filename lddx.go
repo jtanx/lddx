@@ -4,24 +4,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	//"runtime/pprof"
 
 	"github.com/jessevdk/go-flags"
 	. "github.com/jtanx/lddx/lddx"
 )
 
 type options struct {
-	NoColor            bool     `short:"n" long:"no-color" description:"Colourised output"`
-	Quiet              bool     `short:"q" long:"quiet" description:"Less verbose output"`
-	Version            bool     `short:"v" long:"version" description:"Prints the version of lddx"`
-	Recursive          bool     `short:"r" long:"recursive" description:"Recursively find dependencies"`
-	Jobs               int      `short:"j" long:"jobs" default:"10" description:"Number of files to process concurrently."`
-	JSON               bool     `short:"s" long:"json" description:"Dump dependencies in JSON format"`
-	ExecutablePath     string   `short:"e" long:"executable-path" description:"Executable path to use when resolving @executable_path dependencies"`
-	IgnoredPrefixes    []string `short:"i" long:"ignore-prefix" description:"Specifies a library prefix to ignore when resolving dependencies"`
-	IgnoredFiles       []string `short:"x" long:"ignore-file" description:"Specifies a file (e.g. libz.dylib) to ignore when resolving dependencies (case sensitive)"`
-	CollectOrder       []string `short:"l" long:"collect-order" description:"Specifies a prefix to prefer when resolving conflicts in library collection"`
-	NoDefaultIgnore    bool     `short:"d" long:"no-default-ignore" description:"By default, libraries under /System and /usr/lib are ignored from dependency resolution. Specify this flag to not ignore these"`
+	NoColor         bool     `short:"n" long:"no-color" description:"Colourised output"`
+	Quiet           bool     `short:"q" long:"quiet" description:"Less verbose output"`
+	Version         bool     `short:"v" long:"version" description:"Prints the version of lddx"`
+	Recursive       bool     `short:"r" long:"recursive" description:"Recursively find dependencies"`
+	Jobs            int      `short:"j" long:"jobs" default:"10" description:"Number of files to process concurrently."`
+	JSON            bool     `short:"s" long:"json" description:"Dump dependencies in JSON format"`
+	IgnoredPrefixes []string `short:"i" long:"ignore-prefix" description:"Specifies a library prefix to ignore when resolving dependencies"`
+	IgnoredFiles    []string `short:"x" long:"ignore-file" description:"Specifies a file (e.g. libz.dylib) to ignore when resolving dependencies (case sensitive)"`
+	NoDefaultIgnore bool     `short:"d" long:"no-default-ignore" description:"By default, libraries under /System and /usr/lib are ignored from dependency resolution. Specify this flag to not ignore these"`
+	ExecutablePath  string   `short:"e" long:"executable-path" description:"Executable path to use when resolving @executable_path dependencies"`
+
 	Collect            string   `short:"c" long:"collect" description:"Collects dependencies into the specified folder"`
+	CollectOrder       []string `short:"l" long:"collect-order" description:"Specifies a prefix to prefer when resolving conflicts in library collection"`
 	Overwrite          bool     `short:"w" long:"overwrite" description:"Ignore and overwrite existing libraries in the collection folder"`
 	ModifySpecialPaths bool     `short:"m" long:"modify-special-paths" description:"Collect and modify special paths (e.g. @executable_path/@loader_path) when collecting dependencies"`
 	CollectFrameworks  bool     `short:"f" long:"collect-frameworks" descrption:"Include Framework libraries in the collection"`
@@ -92,17 +94,17 @@ func main() {
 		os.Exit(0)
 	}
 
+	//f, err := os.Create("test.pprof")
+	//pprof.StartCPUProfile(f)
+	//defer pprof.StopCPUProfile()
+
 	LogInit(opts.NoColor, opts.Quiet)
-	if _, err := DepsCheckOToolVersion(); err != nil {
-		LogError("Could not run otool: %s", err)
-		LogError("Ensure you have the Command Line Tools installed.")
-		os.Exit(1)
-	}
 
 	depOpts := DependencyOptions{
 		Recursive:    opts.Recursive,
 		Jobs:         opts.Jobs,
 		IgnoredFiles: opts.IgnoredFiles,
+		// Executable path and ignored prefixes set below.
 	}
 
 	if opts.ExecutablePath != "" {
@@ -127,7 +129,7 @@ func main() {
 		} else {
 			fmt.Println(string(out))
 		}
-	} else {
+	} else if opts.Collect == "" || !opts.Quiet {
 		for _, dep := range graph.TopDeps {
 			if len(graph.TopDeps) > 1 {
 				fmt.Printf("%s:\n", dep.Path)
