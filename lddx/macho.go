@@ -32,7 +32,7 @@ type Dylib struct {
 	Time           uint32    // Time of library
 	CurrentVersion uint32    // Library version
 	CompatVersion  uint32    // Compatibility version
-	WeakLoad       bool      // Whether this is a weakly loaded library
+	Weak           bool      // Whether this is a weakly loaded library
 	Arch           *ArchType // Architecture type
 }
 
@@ -86,9 +86,9 @@ func FindFatMachOFiles(folder string) ([]string, error) {
 	return ret, err
 }
 
-// TryLoadWeakLib attempts to read information about a weak load command.
+// TryParseLoadCmdWeakLib attempts to read information about a weak load command.
 // This code is based on the LoadCmdDylib loader code in debug/macho.
-func TryLoadWeakLib(data []byte, byteOrder binary.ByteOrder) (*Dylib, error) {
+func TryParseLoadCmdWeakLib(data []byte, byteOrder binary.ByteOrder) (*Dylib, error) {
 	loadCommand := macho.LoadCmd(byteOrder.Uint32(data[0:4]))
 
 	// Check if this is a weak load command, otherwise ignore.
@@ -114,7 +114,7 @@ func TryLoadWeakLib(data []byte, byteOrder binary.ByteOrder) (*Dylib, error) {
 		Time:           header.Time,
 		CurrentVersion: header.CurrentVersion,
 		CompatVersion:  header.CompatVersion,
-		WeakLoad:       true,
+		Weak:           true,
 	}, nil
 }
 
@@ -123,22 +123,19 @@ func TryLoadWeakLib(data []byte, byteOrder binary.ByteOrder) (*Dylib, error) {
 // This method will search for both normal libs and weakly loaded libs.
 func ReadDylibs(file string) ([]Dylib, error) {
 	var libs []*macho.File
-	if fat, err := macho.OpenFat(file); err != nil {
-		if err == macho.ErrNotFat {
-			fp, err := macho.Open(file)
-			if err != nil {
-				return nil, err
-			}
-			defer fp.Close()
-			libs = append(libs, fp)
-		} else {
+
+	if fp, err := macho.Open(file); err != nil {
+		if fat, err := macho.OpenFat(file); err != nil {
 			return nil, err
+		} else {
+			for _, lib := range fat.Arches {
+				libs = append(libs, lib.File)
+			}
+			defer fat.Close()
 		}
 	} else {
-		for _, lib := range fat.Arches {
-			libs = append(libs, lib.File)
-		}
-		defer fat.Close()
+		defer fp.Close()
+		libs = append(libs, fp)
 	}
 
 	var ret []Dylib
@@ -155,10 +152,10 @@ func ReadDylibs(file string) ([]Dylib, error) {
 					Time:           dyl.Time,
 					CurrentVersion: dyl.CurrentVersion,
 					CompatVersion:  dyl.CompatVersion,
-					WeakLoad:       false,
+					Weak:           false,
 					Arch:           &arch,
 				})
-			} else if dl, err := TryLoadWeakLib(load.Raw(), lib.ByteOrder); err != nil {
+			} else if dl, err := TryParseLoadCmdWeakLib(load.Raw(), lib.ByteOrder); err != nil {
 				return nil, err
 			} else if dl != nil {
 				dl.Arch = &arch

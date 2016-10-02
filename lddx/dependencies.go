@@ -161,7 +161,7 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 		resolvedPath, err := resolvePath(lib.Path, dep, opts)
 		if err != nil {
 			LogWarn("Could not resolve dependency %s for %s: %s (weak: %v)",
-				lib.Path, dep.Path, err, lib.WeakLoad)
+				lib.Path, dep.Path, err, lib.Weak)
 			resolvedPath = lib.Path
 		}
 
@@ -174,7 +174,7 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 				Path:        lib.Path,
 				Info:        "UNKNOWN", //strings.TrimSpace(output[i+5]) + ", " + strings.TrimSpace(output[i+4]),
 				NotResolved: err != nil,
-				IsWeakDep:   lib.WeakLoad,
+				IsWeakDep:   lib.Weak,
 			}
 			if lib.Path != resolvedPath {
 				subDep.RealPath = &resolvedPath
