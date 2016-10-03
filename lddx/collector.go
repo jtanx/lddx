@@ -1,12 +1,12 @@
 package lddx
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 )
 
 // CollectorOptions specifies the options for the collector
@@ -37,11 +37,13 @@ func getNiceness(ent1, ent2 string, order []string) (int, int) {
 	return nice1, nice2
 }
 
+// isFrameworkLib determines if the file is likely a framework dylib.
+// They have no extensions. I think.
 func isFrameworkLib(file string) bool {
-	return !strings.HasSuffix(file, ".dylib") && !strings.HasSuffix(file, ".so")
+	return filepath.Ext(file) == ""
 }
 
-// Copies a file and makes it writeable
+// Copies a file and ensures it's writeable
 func copyFile(from, to string) error {
 	if info, err := os.Stat(from); err != nil {
 		return err
@@ -53,33 +55,36 @@ func copyFile(from, to string) error {
 	return nil
 }
 
-func collectorWorker(jobs <-chan *Dependency, wg *sync.WaitGroup, opts *CollectorOptions) {
+func collectorWorker(jobs <-chan *Dependency, results chan<- []string, opts *CollectorOptions) {
+	var errList []string
+
 	for dep := range jobs {
-		LogInfo("PROCESSING %s", dep.Path)
+		// LogInfo("PROCESSING %s", dep.Path)
 		destination := filepath.Join(opts.Folder, dep.Name)
-		if err := copyFile(dep.Path, destination); err != nil {
-			LogError("Could not copy file %s: %s", dep.Path, err)
+		if err := copyFile(dep.RealPath, destination); err != nil {
+			errList = append(errList, fmt.Sprintf("Could not copy file %s [%s]: %s", dep.Path, dep.RealPath, err))
 		} else {
 			out, err := exec.Command("install_name_tool", "-id", "@loader_path/"+dep.Name, destination).CombinedOutput()
 			if err != nil {
-				LogError("Could not update identity: %s [%s]", err, out)
-			}
-			for _, subDep := range *dep.Deps {
-				if subDep.NotResolved || (subDep.Pruned && !subDep.PrunedByFlatDeps) {
-					continue
-				} else if !opts.CollectFrameworks && isFrameworkLib(subDep.Name) {
-					continue
-				} else if !opts.ModifySpecialPaths && IsSpecialPath(subDep.Path) {
-					continue
-				}
+				errList = append(errList, fmt.Sprintf("Could not update identity for %s [%s]: %s [%s]", dep.Path, dep.RealPath, err, out))
+			} else {
+				for _, subDep := range *dep.Deps {
+					if subDep.NotResolved || (subDep.Pruned && !subDep.PrunedByFlatDeps) {
+						continue
+					} else if !opts.CollectFrameworks && isFrameworkLib(subDep.Name) {
+						continue
+					} else if !opts.ModifySpecialPaths && IsSpecialPath(subDep.Path) {
+						continue
+					}
 
-				out, err := exec.Command("install_name_tool", "-change", subDep.Path, "@loader_path/"+subDep.Name, destination).CombinedOutput()
-				if err != nil {
-					LogError("Could not rewrite dep path: %s [%s]", err, out)
+					out, err := exec.Command("install_name_tool", "-change", subDep.Path, "@loader_path/"+subDep.Name, destination).CombinedOutput()
+					if err != nil {
+						errList = append(errList, fmt.Sprintf("Could not rewrite dep path for %s [%s]: %s [%s]", dep.Path, dep.RealPath, err, out))
+					}
 				}
 			}
 		}
-		wg.Done()
+		results <- errList
 	}
 }
 
@@ -142,18 +147,25 @@ func CollectDeps(graph *DependencyGraph, opts *CollectorOptions) error {
 		opts.Jobs = 1
 	}
 
-	var wg sync.WaitGroup
 	jobs := make(chan *Dependency, opts.Jobs)
+	results := make(chan []string, len(toCollect))
 	for i := 0; i < opts.Jobs; i++ {
-		go collectorWorker(jobs, &wg, opts)
+		go collectorWorker(jobs, results, opts)
 	}
 
 	for _, dep := range toCollect {
-		wg.Add(1)
 		jobs <- dep
 	}
 	close(jobs)
-	wg.Wait()
+
+	var errors []string
+	for range toCollect {
+		errors = append(errors, <-results...)
+	}
+
+	if errors != nil {
+		return fmt.Errorf(strings.Join(errors, "\n"))
+	}
 
 	return nil
 }
