@@ -210,6 +210,7 @@ func DepsRead(opts DependencyOptions, files ...string) (*DependencyGraph, error)
 
 	// Reduce the file list to make it unique by the absolute path
 	for _, file := range files {
+		var info []Dylib
 		absPath, err := ResolveAbsPath(file)
 
 		if err != nil {
@@ -218,6 +219,8 @@ func DepsRead(opts DependencyOptions, files ...string) (*DependencyGraph, error)
 			return nil, err
 		} else if !isfm {
 			return nil, fmt.Errorf("%s: Not a Mach-O/Universal binary", file)
+		} else if info, err = GetDylibInfo(absPath); err != nil {
+			return nil, err
 		}
 
 		if !seenFiles[file] {
@@ -229,6 +232,12 @@ func DepsRead(opts DependencyOptions, files ...string) (*DependencyGraph, error)
 			}
 			if absPath != file {
 				dep.RealPath = absPath
+			}
+			if info != nil {
+				// FIXME: We only choose the first value...
+				dep.Info = fmt.Sprintf("compatibility version %d.%d.%d, current version %d.%d.%d",
+					info[0].CompatVersion>>16, (info[0].CompatVersion>>8)&0xff, info[0].CompatVersion&0xff,
+					info[0].CurrentVersion>>16, (info[0].CurrentVersion>>8)&0xff, info[0].CurrentVersion&0xff)
 			}
 			deps = append(deps, dep)
 			seenFiles[file] = true

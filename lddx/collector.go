@@ -43,6 +43,15 @@ func isFrameworkLib(file string) bool {
 	return filepath.Ext(file) == ""
 }
 
+func getTopDep(dep *Dependency, graph *DependencyGraph) *Dependency {
+	for _, topDep := range graph.TopDeps {
+		if dep.Name == topDep.Name && dep.Info == topDep.Info {
+			return topDep
+		}
+	}
+	return nil
+}
+
 // Copies a file and ensures it's writeable
 func copyFile(from, to string) error {
 	if info, err := os.Stat(from); err != nil {
@@ -55,7 +64,7 @@ func copyFile(from, to string) error {
 	return nil
 }
 
-func collectorWorker(jobs <-chan *Dependency, results chan<- []string, opts *CollectorOptions) {
+func collectorWorker(jobs <-chan *Dependency, results chan<- []string, graph *DependencyGraph, opts *CollectorOptions) {
 	var errList []string
 
 	for dep := range jobs {
@@ -69,17 +78,28 @@ func collectorWorker(jobs <-chan *Dependency, results chan<- []string, opts *Col
 				errList = append(errList, fmt.Sprintf("Could not update identity for %s [%s]: %s [%s]", dep.Path, dep.RealPath, err, out))
 			} else {
 				for _, subDep := range *dep.Deps {
+					var err error
+					patchedPath := "@loader_path/" + subDep.Name
+
 					if subDep.NotResolved || (subDep.Pruned && !subDep.PrunedByFlatDeps) {
-						continue
-					} else if !opts.CollectFrameworks && isFrameworkLib(subDep.Name) {
 						continue
 					} else if !opts.ModifySpecialPaths && IsSpecialPath(subDep.Path) {
 						continue
+					} else if pTopDep := getTopDep(subDep, graph); pTopDep != nil {
+						rel, err := filepath.Rel(filepath.Dir(destination), pTopDep.Path)
+						if err != nil {
+							errList = append(errList, fmt.Sprintf("Could not get relative path from %s to %s (%s)", dep.Name, subDep.Name, subDep.RealPath))
+						}
+						patchedPath = "@loader_path/" + rel
+					} else if !opts.CollectFrameworks && isFrameworkLib(subDep.Name) {
+						continue
 					}
 
-					out, err := exec.Command("install_name_tool", "-change", subDep.Path, "@loader_path/"+subDep.Name, destination).CombinedOutput()
-					if err != nil {
-						errList = append(errList, fmt.Sprintf("Could not rewrite dep path for %s [%s]: %s [%s]", dep.Path, dep.RealPath, err, out))
+					if err == nil {
+						out, err := exec.Command("install_name_tool", "-change", subDep.Path, patchedPath, destination).CombinedOutput()
+						if err != nil {
+							errList = append(errList, fmt.Sprintf("Could not rewrite dep path for %s [%s]: %s [%s]", dep.Path, dep.RealPath, err, out))
+						}
 					}
 				}
 			}
@@ -119,11 +139,14 @@ func CollectDeps(graph *DependencyGraph, opts *CollectorOptions) error {
 		if dep.NotResolved {
 			LogWarn("Not collecting unresolved dependency %s (%s)", dep.Name, dep.Path)
 			continue
-		} else if !opts.CollectFrameworks && isFrameworkLib(dep.Name) {
-			LogWarn("Not collecting framework dependency %s (%s)", dep.Name, dep.Path)
-			continue
 		} else if !opts.ModifySpecialPaths && IsSpecialPath(dep.Path) {
 			LogWarn("Not collecting/modifying @dependency %s (%s)", dep.Name, dep.Path)
+			continue
+		} else if getTopDep(dep, graph) != nil {
+			LogNote("Not collecting dependency that is a top-level dependency (Will fix path): %s (%s)", dep.Name, dep.Path)
+			continue
+		} else if !opts.CollectFrameworks && isFrameworkLib(dep.Name) {
+			LogWarn("Not collecting framework dependency %s (%s)", dep.Name, dep.Path)
 			continue
 		}
 
@@ -150,7 +173,7 @@ func CollectDeps(graph *DependencyGraph, opts *CollectorOptions) error {
 	jobs := make(chan *Dependency, opts.Jobs)
 	results := make(chan []string, len(toCollect))
 	for i := 0; i < opts.Jobs; i++ {
-		go collectorWorker(jobs, results, opts)
+		go collectorWorker(jobs, results, graph, opts)
 	}
 
 	for _, dep := range toCollect {
@@ -175,6 +198,12 @@ func FixupToplevels(graph *DependencyGraph, opts *CollectorOptions) error {
 		if ent.NotResolved {
 			LogWarn("Not fixing unresolved toplevel %s", ent.Path)
 			continue
+		} else if info, err := os.Lstat(ent.Path); err != nil {
+			LogWarn("Cannot lstat %s, skipping", ent.Path)
+			continue
+		} else if (info.Mode() & os.ModeSymlink) != 0 {
+			LogNote("Skipping over symlink %s", ent.Path)
+			continue
 		} else if info, err := os.Stat(ent.RealPath); err != nil {
 			LogWarn("Cannot stat %s, skipping", ent.Path)
 			continue
@@ -183,16 +212,24 @@ func FixupToplevels(graph *DependencyGraph, opts *CollectorOptions) error {
 			continue
 		}
 
+		if out, err := exec.Command("install_name_tool", "-id", "@loader_path/"+ent.Name, ent.RealPath).CombinedOutput(); err != nil {
+			LogError("Could not update dep id: %s [%s]", err, out)
+		}
+
 		for _, subDep := range *ent.Deps {
+			depPath := filepath.Join(opts.Folder, subDep.Name)
+
 			if subDep.NotResolved || (subDep.Pruned && !subDep.PrunedByFlatDeps) {
-				continue
-			} else if !opts.CollectFrameworks && isFrameworkLib(subDep.Name) {
 				continue
 			} else if !opts.ModifySpecialPaths && IsSpecialPath(subDep.Path) {
 				continue
+			} else if pTopDep := getTopDep(subDep, graph); pTopDep != nil {
+				depPath = pTopDep.RealPath
+			} else if !opts.CollectFrameworks && isFrameworkLib(subDep.Name) {
+				continue
 			}
 
-			rel, err := filepath.Rel(filepath.Dir(ent.RealPath), filepath.Join(opts.Folder, subDep.Name))
+			rel, err := filepath.Rel(filepath.Dir(ent.RealPath), depPath)
 			if err != nil {
 				LogWarn("Could not determine relative path to dep %s: %s", ent.RealPath, err)
 				continue

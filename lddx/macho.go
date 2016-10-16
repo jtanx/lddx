@@ -20,6 +20,7 @@ const (
 
 	loadCmdReq       = 0x80000000
 	loadCmdWeakDylib = (0x18 | loadCmdReq)
+	loadCmdId        = 0x0d
 )
 
 type ArchType struct {
@@ -91,13 +92,13 @@ func FindFatMachOFiles(folder string) ([]string, error) {
 	return ret, err
 }
 
-// TryParseLoadCmdWeakLib attempts to read information about a weak load command.
+// TryParseLoadCmd attempts to read information about a given load command.
 // This code is based on the LoadCmdDylib loader code in debug/macho.
-func TryParseLoadCmdWeakLib(data []byte, byteOrder binary.ByteOrder) (*Dylib, error) {
+func TryParseLoadCmd(loadCmd macho.LoadCmd, data []byte, byteOrder binary.ByteOrder) (*Dylib, error) {
 	loadCommand := macho.LoadCmd(byteOrder.Uint32(data[0:4]))
 
-	// Check if this is a weak load command, otherwise ignore.
-	if loadCommand != loadCmdWeakDylib {
+	// Check if this is the given load command, otherwise ignore.
+	if loadCommand != loadCmd {
 		return nil, nil
 	}
 
@@ -106,7 +107,7 @@ func TryParseLoadCmdWeakLib(data []byte, byteOrder binary.ByteOrder) (*Dylib, er
 	if err := binary.Read(b, byteOrder, &header); err != nil {
 		return nil, err
 	} else if header.Name >= uint32(len(data)) {
-		return nil, errors.New("invalid name in weak dynamic library command")
+		return nil, errors.New("invalid name in dynamic library command")
 	}
 
 	strEnd := int(header.Name)
@@ -165,11 +166,50 @@ func ReadDylibs(file string, limiter chan int) ([]Dylib, error) {
 					Weak:           false,
 					Arch:           &arch,
 				})
-			} else if dl, err := TryParseLoadCmdWeakLib(load.Raw(), lib.ByteOrder); err != nil {
+			} else if dl, err := TryParseLoadCmd(loadCmdWeakDylib, load.Raw(), lib.ByteOrder); err != nil {
 				return nil, err
 			} else if dl != nil {
 				dl.Arch = &arch
 				ret = append(ret, *dl)
+			}
+		}
+	}
+	return ret, nil
+}
+
+// GetDylibInfo gets information about the file itself, if available.
+// For example, if the file is a dylib, it returns information about the Dylib itself.
+func GetDylibInfo(file string) ([]Dylib, error) {
+	var libs []*macho.File
+
+	if fp, err := macho.Open(file); err != nil {
+		if fat, err := macho.OpenFat(file); err != nil {
+			return nil, err
+		} else {
+			for _, lib := range fat.Arches {
+				libs = append(libs, lib.File)
+			}
+			defer fat.Close()
+		}
+	} else {
+		defer fp.Close()
+		libs = append(libs, fp)
+	}
+
+	var ret []Dylib
+	for _, lib := range libs {
+		arch := ArchType{
+			Cpu:    lib.Cpu,
+			SubCpu: lib.SubCpu,
+		}
+
+		for _, load := range lib.Loads {
+			if dl, err := TryParseLoadCmd(loadCmdId, load.Raw(), lib.ByteOrder); err != nil {
+				return nil, err
+			} else if dl != nil {
+				dl.Arch = &arch
+				ret = append(ret, *dl)
+				break
 			}
 		}
 	}
