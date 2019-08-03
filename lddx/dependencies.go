@@ -142,7 +142,11 @@ func pruneDep(lib *Dylib, parent *Dependency, graph *DependencyGraph, opts *Depe
 	for _, topDep := range graph.TopDeps {
 		if topDep.Path == ret.Path || topDep.RealPath == ret.RealPath {
 			// Todo: Set pruned or not???
-			ret.Pruned = true
+			// Let's say no - it doesn't end up in flat deps
+			// But it needs to remain not pruned so toplevel deps that
+			// depend on other toplevel deps gets properly fixed up
+			// What am I even doing
+			ret.Pruned = false
 			return ret, true
 		}
 	}

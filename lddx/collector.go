@@ -68,7 +68,7 @@ func collectorWorker(jobs <-chan *Dependency, results chan<- []string, graph *De
 	var errList []string
 
 	for dep := range jobs {
-		// LogInfo("PROCESSING %s", dep.Path)
+		LogInfo("Collecting for %s", dep.Path)
 		destination := filepath.Join(opts.Folder, dep.Name)
 		if err := copyFile(dep.RealPath, destination); err != nil {
 			errList = append(errList, fmt.Sprintf("Could not copy file %s [%s]: %s", dep.Path, dep.RealPath, err))
@@ -196,6 +196,7 @@ func CollectDeps(graph *DependencyGraph, opts *CollectorOptions) error {
 
 func FixupToplevels(graph *DependencyGraph, opts *CollectorOptions) error {
 	for _, ent := range graph.TopDeps {
+		LogInfo("Fixing top-level %s", ent.Name)
 		if ent.NotResolved {
 			LogWarn("Not fixing unresolved toplevel %s", ent.Path)
 			continue
