@@ -127,8 +127,9 @@ func TryParseLoadCmd(loadCmd macho.LoadCmd, data []byte, byteOrder binary.ByteOr
 // ReadDylibs returns the list of dynamic libraries referenced by a file.
 // The file may either be a fat file or a normal Mach-O file.
 // This method will search for both normal libs and weakly loaded libs.
-func ReadDylibs(file string, limiter chan int) ([]Dylib, error) {
+func ReadDylibs(file string, limiter chan int) ([]Dylib, []string, error) {
 	var libs []*macho.File
+	var rpaths []string
 
 	if limiter != nil {
 		<-limiter
@@ -137,7 +138,7 @@ func ReadDylibs(file string, limiter chan int) ([]Dylib, error) {
 
 	if fp, err := macho.Open(file); err != nil {
 		if fat, err := macho.OpenFat(file); err != nil {
-			return nil, err
+			return nil, nil, err
 		} else {
 			for _, lib := range fat.Arches {
 				libs = append(libs, lib.File)
@@ -166,15 +167,17 @@ func ReadDylibs(file string, limiter chan int) ([]Dylib, error) {
 					Weak:           false,
 					Arch:           &arch,
 				})
+			} else if rp, ok := load.(*macho.Rpath); ok {
+				rpaths = append(rpaths, rp.Path)
 			} else if dl, err := TryParseLoadCmd(loadCmdWeakDylib, load.Raw(), lib.ByteOrder); err != nil {
-				return nil, err
+				return nil, nil, err
 			} else if dl != nil {
 				dl.Arch = &arch
 				ret = append(ret, *dl)
 			}
 		}
 	}
-	return ret, nil
+	return ret, rpaths, nil
 }
 
 // GetDylibInfo gets information about the file itself, if available.

@@ -91,7 +91,7 @@ func main() {
 	}
 
 	if opts.Version {
-		fmt.Println("lddx version 0.0.1")
+		fmt.Println("lddx version 0.1.0")
 		os.Exit(0)
 	}
 

@@ -132,6 +132,7 @@ func CollectDeps(graph *DependencyGraph, opts *CollectorOptions) error {
 					continue
 				}
 			} else {
+				LogNote("Skipping %s as it exists in %s", dep.Name, opts.Folder)
 				continue
 			}
 		}

@@ -2,6 +2,7 @@ package lddx
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -31,6 +32,7 @@ type Dependency struct {
 	NotResolved      bool           // Indicates if the dependencies could not be resolved (could not determine dependencies)
 	IsWeakDep        bool           // Indicates if this dependency is from a weak load command
 	Deps             *[]*Dependency // List of dependencies that this dependency depends on. Ugh we need these pointers because multiple Dependencies can share this.
+	RPaths           []string       // The rpaths associated with this file
 }
 
 // ByPath sorts a Dependency slice by the Path field
@@ -72,6 +74,25 @@ func resolvePath(path string, dep *Dependency, opts *DependencyOptions) (string,
 			path = opts.ExecutablePath + path[len("@executable_path"):]
 		} else if strings.HasPrefix(path, "@loader_path/") {
 			path = filepath.Dir(dep.RealPath) + path[len("@loader_path"):]
+		} else if strings.HasPrefix(path, "@rpath/") {
+			found := false
+			for _, rpath := range dep.RPaths {
+				if testPath, err := resolvePath(rpath+path[len("@rpath"):], dep, opts); err != nil {
+					LogWarn("Could not resolve %s with rpath of %s: %v", path, rpath, err)
+				} else {
+					if _, err := os.Stat(testPath); os.IsNotExist(err) {
+						LogNote("%s not found with rpath %s at %s", path, rpath, testPath)
+					} else {
+						LogNote("Resolved %s to %s using rpath %s", path, testPath, rpath)
+						path = testPath
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				return path, fmt.Errorf("%s not found in the rpaths: %v", path, dep.RPaths)
+			}
 		} else {
 			return path, fmt.Errorf("%s: Unsupported", path)
 		}
@@ -165,12 +186,13 @@ func depsRead(dep *Dependency, graph *DependencyGraph, opts *DependencyOptions, 
 		defer wg.Done()
 	}
 
-	libs, err := ReadDylibs(dep.RealPath, limiter)
+	libs, rpaths, err := ReadDylibs(dep.RealPath, limiter)
 	if err != nil {
 		LogError("Could not get libs for %s [%s]: %s", dep.Path, dep.RealPath, err)
 		dep.NotResolved = true
 		return
 	}
+	dep.RPaths = rpaths
 
 	var depsToProcess []*Dependency
 	observedDeps := make(map[string]bool)
