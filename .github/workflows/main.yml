@@ -17,7 +17,6 @@ jobs:
           brew link --overwrite go
       - name: Build
         run: |
-          go get
           mkdir build
           go build -o build/lddx
       - name: Artifact
@@ -39,4 +38,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload continuous build/lddx --clobber -R ${{ github.repository }}
+          gh release upload continuous lddx --clobber -R ${{ github.repository }}
