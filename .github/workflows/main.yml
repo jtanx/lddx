@@ -1,0 +1,42 @@
+name: Build
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  main:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Prepare
+        run: |
+          brew install go || true
+          brew link --overwrite go
+      - name: Build
+        run: |
+          go get
+          mkdir build
+          go build -o build/lddx
+      - name: Artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: build
+          path: build/lddx
+  upload:
+    permissions:
+      contents: write
+    needs: [main]
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v2
+        with:
+          name: build
+      - name: Upload
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload continuous build/lddx --clobber -R ${{ github.repository }}
