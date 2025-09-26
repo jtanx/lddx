@@ -10,7 +10,7 @@ jobs:
   main:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v5
       - name: Prepare
         run: |
           brew install go || true
@@ -20,7 +20,7 @@ jobs:
           mkdir build
           go build -o build/lddx
       - name: Artifact
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: build
           path: build/lddx
@@ -31,7 +31,7 @@ jobs:
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v2
+      - uses: actions/download-artifact@v4
         with:
           name: build
       - name: Upload
